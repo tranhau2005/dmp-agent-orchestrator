@@ -107,3 +107,74 @@ async def test_cli_transport_uses_configured_fake_process(monkeypatch):
     monkeypatch.setattr("app.services.adapters.cli.asyncio.create_subprocess_exec", launch)
     transport = CLITransport(CLIConfig({"start": ("fake-cli", "start")}, 5, 100), Codec())
     assert await transport._invoke("start", {}) == "fake-ref"
+
+
+async def test_remote_cli_streams_through_fake_launcher():
+    from app.services.adapters.contract import AdapterRunInput, RunEvent
+    from app.services.adapters.live import LiveCLITransport
+    from app.tools.context import ContextPackager
+
+    class Input:
+        def write(self, data):
+            assert data == b"prompt"
+
+        async def drain(self):
+            pass
+
+        def close(self):
+            pass
+
+    class Output:
+        def __init__(self):
+            self.lines = iter([b"first\n", b"second\n", b""])
+
+        async def readline(self):
+            return next(self.lines)
+
+    class Process:
+        def __init__(self):
+            self.stdin = Input()
+            self.stdout = Output()
+            self.returncode = None
+
+        async def wait(self):
+            self.returncode = 0
+            return 0
+
+    class Launcher:
+        async def launch(self, argv, worktree):
+            assert worktree == "/fake/worktree"
+            return Process()
+
+    class Codec:
+        def prompt(self, provider, run_input):
+            return b"prompt"
+
+        def event(self, line):
+            return RunEvent(event_type="output", payload={"text": line.decode().strip()})
+
+        def result(self, events):
+            return {"count": len(events)}
+
+    package = ContextPackager(
+        {"allowed_paths": [], "allowed_commands": [], "constraints": {}}
+    ).build(
+        repository_identity={},
+        base_commit_sha="a" * 40,
+        job_id=1,
+        task_id=2,
+        spec_references=[],
+        execution_policy={},
+    )
+    inp = AdapterRunInput(
+        run_id=7,
+        context=package,
+        worktree_ref="/fake/worktree",
+        execution_policy={},
+        timeout_seconds=5,
+    )
+    transport = LiveCLITransport(Launcher(), Codec(), ("fake-cli",), 1000)
+    ref = await transport.start("kiro", inp)
+    events = [event async for event in transport.events(ref)]
+    assert [event.payload["text"] for event in events] == ["first", "second"]
+    assert await transport.result(ref) == {"count": 2}
