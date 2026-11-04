@@ -3,6 +3,7 @@
 import re
 from pathlib import PurePosixPath
 from typing import Protocol
+from urllib.parse import urlsplit
 
 from app.core.exceptions import SetupFailure
 from app.core.models import AuditRecord, RemoteRepository
@@ -20,6 +21,9 @@ class RepositoryService:
         self.secret_policy = secret_policy
 
     async def register(self, request: RepositoryCreate) -> RemoteRepository:
+        parsed_url = urlsplit(request.repo_url)
+        if parsed_url.password is not None or parsed_url.query or parsed_url.fragment:
+            raise SetupFailure("repository URL must not contain credentials or query data")
         for path in (request.canonical_repo_path, request.remote_workspace_root):
             parsed = PurePosixPath(path)
             if not parsed.is_absolute() or ".." in parsed.parts:

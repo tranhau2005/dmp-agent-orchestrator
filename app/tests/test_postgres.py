@@ -410,12 +410,31 @@ async def test_started_binding_rejected_by_database():
                 protocol_version="1",
                 base_commit_sha="old",
                 context_hash="hash",
-                status="running",
-                started_at=datetime.now(UTC),
+                status="queued",
             )
             session.add(run)
             await session.flush()
             run_id = run.id
+            session.add(
+                models.ContextPackage(
+                    run_id=run.id,
+                    repository_identity={},
+                    base_commit_sha="old",
+                    job_id=job.id,
+                    task_id=task.id,
+                    spec_references=[],
+                    allowed_paths=[],
+                    allowed_commands=[],
+                    constraints={},
+                    execution_policy={},
+                    applied_defaults={},
+                    context_hash="hash",
+                    schema_version="1.0",
+                )
+            )
+            await session.flush()
+            run.started_at = datetime.now(UTC)
+            run.status = "running"
     async with factory() as session:
         with pytest.raises(DBAPIError):
             async with session.begin():
@@ -423,6 +442,13 @@ async def test_started_binding_rejected_by_database():
                 run.base_commit_sha = "new"
     async with factory() as session:
         assert (await session.get(models.Run, run_id)).base_commit_sha == "old"
+    async with factory() as session:
+        with pytest.raises(DBAPIError):
+            async with session.begin():
+                context = await session.scalar(
+                    select(models.ContextPackage).where(models.ContextPackage.run_id == run_id)
+                )
+                context.repository_identity = {"name": "changed"}
 
     import asyncio
 

@@ -1,5 +1,7 @@
 """Create and change a run's immutable execution binding under a row lock."""
 
+from datetime import UTC, datetime
+
 from sqlalchemy import select
 
 from app.core.exceptions import ImmutabilityError, SetupFailure
@@ -37,4 +39,30 @@ class RunBindingService:
         else:
             for name, value in values.items():
                 setattr(stored, name, value)
+        await self.session.flush()
+
+    async def start(self, run_id: int) -> None:
+        if not self.session.in_transaction():
+            raise RuntimeError("run start requires a caller-owned transaction")
+        run = await self.session.scalar(select(Run).where(Run.id == run_id).with_for_update())
+        if run is None:
+            raise LookupError("run not found")
+        if run.started_at is not None:
+            raise ImmutabilityError("run has already started")
+        stored = await self.session.scalar(
+            select(StoredContext).where(StoredContext.run_id == run_id)
+        )
+        if stored is None:
+            raise SetupFailure("run has no context package")
+        names = ContextPackage.model_fields
+        package = ContextPackage.model_validate({name: getattr(stored, name) for name in names})
+        if (
+            package.task_id != run.task_id
+            or package.base_commit_sha != run.base_commit_sha
+            or package.context_hash != run.context_hash
+            or ContextPackager({}).context_hash(package) != run.context_hash
+        ):
+            raise SetupFailure("run binding does not match context package")
+        run.started_at = datetime.now(UTC)
+        run.status = "running"
         await self.session.flush()

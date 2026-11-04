@@ -12,6 +12,18 @@ def upgrade() -> None:
     op.execute("""
     CREATE FUNCTION guard_started_run_binding() RETURNS trigger AS $$
     BEGIN
+      IF TG_OP = 'INSERT' THEN
+        IF NEW.started_at IS NOT NULL THEN
+          RAISE EXCEPTION 'run must be bound before start';
+        END IF;
+        RETURN NEW;
+      END IF;
+      IF OLD.started_at IS NULL AND NEW.started_at IS NOT NULL AND NOT EXISTS (
+          SELECT 1 FROM context_packages WHERE run_id = NEW.id
+          AND task_id = NEW.task_id AND base_commit_sha = NEW.base_commit_sha
+          AND context_hash = NEW.context_hash) THEN
+        RAISE EXCEPTION 'run binding must match context before start';
+      END IF;
       IF OLD.started_at IS NOT NULL AND (
           NEW.started_at IS DISTINCT FROM OLD.started_at OR
           NEW.task_id IS DISTINCT FROM OLD.task_id OR
@@ -23,7 +35,7 @@ def upgrade() -> None:
     END; $$ LANGUAGE plpgsql
     """)
     op.execute("""
-    CREATE TRIGGER guard_run_binding BEFORE UPDATE ON runs
+    CREATE TRIGGER guard_run_binding BEFORE INSERT OR UPDATE ON runs
     FOR EACH ROW EXECUTE FUNCTION guard_started_run_binding()
     """)
     op.execute("""
