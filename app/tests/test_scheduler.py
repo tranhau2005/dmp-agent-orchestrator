@@ -69,4 +69,6 @@ async def test_only_one_claim_wins(attempts):
         with pytest.raises(ClaimRejected):
             await scheduler.claim(1, 2, actor="test", correlation_id="test")
     assert [record.decision_or_action for record in session.audit].count("claim_accepted") == 1
-    assert len(session.audit) == attempts
+    assert [record.decision_or_action for record in session.audit].count(
+        "claim_rejected"
+    ) == attempts - 1

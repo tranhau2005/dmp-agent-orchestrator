@@ -5,7 +5,7 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from app.core.enums import TaskState
-from app.core.exceptions import ClaimRejected, ConfigurationError
+from app.core.exceptions import ClaimRejected, ConfigurationError, UncertainTransition
 from app.core.models import AuditRecord, Job, Task, TaskDependency
 
 
@@ -24,15 +24,54 @@ class Scheduler:
         token = str(uuid4())
         key = f"ao:job:{job_id}:claim"
         acquired = await self.redis.set(key, token, nx=True, ex=self.lease_seconds)
-        rejected = not acquired
+        if not acquired:
+            async with self.session_factory() as session:
+                async with session.begin():
+                    session.add(
+                        AuditRecord(
+                            actor_identity=actor,
+                            target_identity=f"task:{task_id}",
+                            decision_or_action="claim_rejected",
+                            correlation_id=correlation_id,
+                            reason="lease unavailable",
+                            transition_certainty="certain",
+                        )
+                    )
+            raise ClaimRejected("task claim rejected", correlation_id=correlation_id)
+        pending = False
         async with self.session_factory() as session:
             async with session.begin():
                 job = await session.scalar(select(Job).where(Job.id == job_id).with_for_update())
                 task = await session.scalar(
                     select(Task).where(Task.id == task_id, Task.job_id == job_id).with_for_update()
                 )
-                if task is not None:
-                    await self.audit._require_certain(session, task_id)
+                if job is not None and task is not None:
+                    try:
+                        await self.audit._require_certain(session, task_id)
+                        pending = True
+                    except UncertainTransition:
+                        pass
+                session.add(
+                    AuditRecord(
+                        actor_identity=actor,
+                        target_identity=f"task:{task_id}",
+                        decision_or_action="transition_pending" if pending else "claim_rejected",
+                        correlation_id=token if pending else correlation_id,
+                        reason=None if pending else "transition uncertain or task missing",
+                        transition_certainty="uncertain" if pending else "certain",
+                    )
+                )
+        if not pending:
+            if acquired:
+                await self.release(job_id, token)
+            raise ClaimRejected("task claim rejected", correlation_id=correlation_id)
+        rejected = False
+        async with self.session_factory() as session:
+            async with session.begin():
+                job = await session.scalar(select(Job).where(Job.id == job_id).with_for_update())
+                task = await session.scalar(
+                    select(Task).where(Task.id == task_id, Task.job_id == job_id).with_for_update()
+                )
                 dependency_rows = (
                     await session.execute(
                         select(Task.state, TaskDependency.accepted_outcomes)
@@ -63,6 +102,15 @@ class Scheduler:
                         decision_or_action="claim_rejected" if rejected else "claim_accepted",
                         correlation_id=correlation_id,
                         reason="claim unavailable" if rejected else None,
+                        transition_certainty="certain",
+                    )
+                )
+                session.add(
+                    AuditRecord(
+                        actor_identity=actor,
+                        target_identity=f"task:{task_id}",
+                        decision_or_action="transition_resolved",
+                        correlation_id=token,
                         transition_certainty="certain",
                     )
                 )
