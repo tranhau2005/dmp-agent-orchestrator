@@ -40,30 +40,13 @@ class PersistentStateMachine:
     async def transition(
         self, task_id: int, target: TaskState, *, actor: str, correlation_id: str
     ) -> None:
-        from sqlalchemy import select
+        from sqlalchemy.ext.asyncio import async_sessionmaker
 
-        from app.core.models import AuditRecord, Task
+        from app.services.audit.service import AuditedTransitionService
 
-        rejected = False
-        async with self.session.begin():
-            task = await self.session.scalar(
-                select(Task).where(Task.id == task_id).with_for_update()
-            )
-            if task is None:
-                raise LookupError("task not found")
-            source = TaskState(task.state)
-            rejected = (source, target) not in self.transitions
-            self.session.add(
-                AuditRecord(
-                    actor_identity=actor,
-                    target_identity=f"task:{task_id}",
-                    decision_or_action="transition_rejected" if rejected else "transition_accepted",
-                    correlation_id=correlation_id,
-                    reason=f"{source} -> {target}",
-                    transition_certainty="certain",
-                )
-            )
-            if not rejected:
-                task.state = target
-        if rejected:
-            raise IllegalTransitionError("transition rejected", correlation_id=correlation_id)
+        if self.session.in_transaction():
+            raise RuntimeError("transition requires a session outside a transaction")
+        factory = async_sessionmaker(self.session.bind, expire_on_commit=False)
+        await AuditedTransitionService(factory, self.transitions).transition(
+            task_id, target, actor=actor, correlation_id=correlation_id
+        )
