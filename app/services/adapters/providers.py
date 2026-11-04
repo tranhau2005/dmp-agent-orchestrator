@@ -40,6 +40,7 @@ class CLIAdapter:
         return await self.transport.health()
 
     async def start_run(self, inp: AdapterRunInput) -> RunStartAck:
+        inp = inp.model_copy(deep=True)
         if ContextPackager({}).context_hash(inp.context) != inp.context.context_hash:
             raise SetupFailure("context hash mismatch")
         ref = await self.transport.start(self.provider, inp)

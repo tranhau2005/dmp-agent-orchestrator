@@ -45,9 +45,17 @@ class CLITransport:
                 process.stdin.write(self.codec.encode(operation, payload))
                 await process.stdin.drain()
                 process.stdin.close()
-                output = await process.stdout.read(self.config.max_output_bytes + 1)
-                if len(output) > self.config.max_output_bytes:
-                    raise AdapterFailure("provider output exceeds configured limit")
+                chunks = bytearray()
+                while True:
+                    chunk = await process.stdout.read(
+                        min(65536, self.config.max_output_bytes + 1 - len(chunks))
+                    )
+                    if not chunk:
+                        break
+                    chunks.extend(chunk)
+                    if len(chunks) > self.config.max_output_bytes:
+                        raise AdapterFailure("provider output exceeds configured limit")
+                output = bytes(chunks)
                 code = await process.wait()
             if code:
                 raise AdapterFailure("provider process failed")

@@ -68,6 +68,9 @@ async def test_cli_transport_uses_configured_fake_process(monkeypatch):
     from app.services.adapters.cli import CLIConfig, CLITransport
 
     class Stream:
+        def __init__(self):
+            self.read_count = 0
+
         def write(self, data):
             assert data == b"encoded"
 
@@ -78,7 +81,8 @@ async def test_cli_transport_uses_configured_fake_process(monkeypatch):
             pass
 
         async def read(self, limit):
-            return b"fake-ref"
+            self.read_count += 1
+            return b"fake-ref" if self.read_count == 1 else b""
 
     class Process:
         stdin = Stream()
