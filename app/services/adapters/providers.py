@@ -75,13 +75,28 @@ class CodexAdapter(CLIAdapter):
     provider = "codex"
 
 
-class AgyAdapter:
+class UnimplementedAdapter:
     # NEEDS-OWNER: provider integration and configuration.
-    def __init__(self):
-        raise NotImplementedError("Agy adapter is not configured")
+    async def report_health(self) -> AdapterHealth:
+        return AdapterHealth(healthy=False, detail="provider not implemented")
+
+    async def start_run(self, inp: AdapterRunInput) -> RunStartAck:
+        raise NotImplementedError("provider is not implemented")
+
+    async def stream_events(self, provider_run_ref: str) -> AsyncIterator[RunEvent]:
+        raise NotImplementedError("provider is not implemented")
+        yield  # pragma: no cover
+
+    async def cancel_run(self, provider_run_ref: str) -> CancelAck:
+        raise NotImplementedError("provider is not implemented")
+
+    async def collect_result(self, provider_run_ref: str) -> StructuredRunResult:
+        raise NotImplementedError("provider is not implemented")
 
 
-class OpenCodeAdapter:
-    # NEEDS-OWNER: provider integration and configuration.
-    def __init__(self):
-        raise NotImplementedError("OpenCode adapter is not configured")
+class AgyAdapter(UnimplementedAdapter):
+    provider = "agy"
+
+
+class OpenCodeAdapter(UnimplementedAdapter):
+    provider = "opencode"

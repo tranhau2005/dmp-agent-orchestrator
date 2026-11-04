@@ -49,3 +49,41 @@ def select_adapter(registrations: list[AdapterRegistration], policy: AdapterPoli
     raise CapabilityError(
         "no adapter meets protocol, mode, capability and result schema requirements"
     )
+
+
+class PersistentAdapterRegistry:
+    """Resolve persisted registrations to locally configured provider implementations."""
+
+    def __init__(self, session, adapters: dict[str, Adapter]):
+        self.session = session
+        self.adapters = adapters
+
+    async def select(self, policy: AdapterPolicy) -> Adapter:
+        from sqlalchemy import select
+
+        from app.core.models import AdapterRegistry
+
+        rows = (
+            await self.session.scalars(
+                select(AdapterRegistry).where(AdapterRegistry.provider_identity == policy.provider)
+            )
+        ).all()
+        registrations = []
+        for row in rows:
+            adapter = self.adapters.get(row.config_reference)
+            if adapter is None:
+                continue
+            registrations.append(
+                AdapterRegistration(
+                    provider=row.provider_identity,
+                    adapter_version=row.adapter_version,
+                    protocol_version=row.protocol_version,
+                    execution_mode=row.execution_mode,
+                    capabilities=frozenset(row.declared_capabilities),
+                    config_reference=row.config_reference,
+                    result_schema_version=row.result_schema_version,
+                    healthy=row.health_state == "healthy",
+                    adapter=adapter,
+                )
+            )
+        return select_adapter(registrations, policy)
