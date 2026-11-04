@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.exceptions import ClaimRejected, SetupFailure
-from app.core.models import Run
+from app.core.models import Job, Run, Task
 from app.services.repositories.service import VerifiedRepository
 
 
@@ -53,6 +53,13 @@ class WorktreeManager:
             )
             if locked is None:
                 raise LookupError("run not found")
+            job_repository_id = await self.session.scalar(
+                select(Job.repository_id)
+                .join(Task, Task.job_id == Job.id)
+                .where(Task.id == locked.task_id)
+            )
+            if job_repository_id != repository.id:
+                raise SetupFailure("verified repository does not match run job")
             if locked.base_commit_sha != verification.base_sha:
                 raise SetupFailure("verified base SHA does not match run")
             if locked.worktree_path or locked.branch_name:

@@ -482,6 +482,7 @@ async def test_started_binding_rejected_by_database():
         with pytest.raises(SetupFailure, match="worktree creation failed"):
             await WorktreeManager(session, BrokenExecutor()).create_for_run(
                 SimpleNamespace(
+                    id=repo_id,
                     remote_workspace_root="/fake/work",
                     ssh_host="example.test",
                     repo_url="ssh://example.test/binding",
@@ -499,6 +500,7 @@ async def test_started_binding_rejected_by_database():
         with pytest.raises(ClaimRejected):
             await WorktreeManager(session, BrokenExecutor()).create_for_run(
                 SimpleNamespace(
+                    id=repo_id,
                     remote_workspace_root="/fake/work",
                     ssh_host="example.test",
                     repo_url="ssh://example.test/binding",
