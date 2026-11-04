@@ -1,5 +1,6 @@
 """Per-run worktree isolation through the injected SSH executor."""
 
+import re
 from dataclasses import dataclass
 from pathlib import PurePosixPath
 
@@ -84,8 +85,10 @@ class WorktreeManager:
             raise RuntimeError("cleanup requires a fresh session")
         # The callback must commit artifacts, logs and structured result before returning a SHA.
         resulting_sha = await persist_evidence(run)
-        if not resulting_sha:
-            raise SetupFailure("resulting commit was not recorded")
+        if not isinstance(resulting_sha, str) or not re.fullmatch(
+            r"[0-9a-f]{40}|[0-9a-f]{64}", resulting_sha
+        ):
+            raise SetupFailure("resulting commit SHA was not recorded")
         async with self.session.begin():
             locked = await self.session.scalar(
                 select(Run).where(Run.id == run.id).with_for_update()
