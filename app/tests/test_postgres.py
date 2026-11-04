@@ -450,6 +450,29 @@ async def test_started_binding_rejected_by_database():
                 )
                 context.repository_identity = {"name": "changed"}
 
+    from types import SimpleNamespace
+
+    from app.core.exceptions import ClaimRejected, SetupFailure
+    from app.tools.worktree import WorktreeManager
+
+    class BrokenExecutor:
+        async def run_repo_command(self, *args, **kwargs):
+            raise RuntimeError("simulated disconnection")
+
+    async with factory() as session:
+        with pytest.raises(SetupFailure, match="worktree creation failed"):
+            await WorktreeManager(session, BrokenExecutor()).create_for_run(
+                SimpleNamespace(remote_workspace_root="/fake/work"), SimpleNamespace(id=run_id)
+            )
+    async with factory() as session:
+        persisted = await session.get(models.Run, run_id)
+        assert persisted.worktree_path == f"/fake/work/run-{run_id}"
+    async with factory() as session:
+        with pytest.raises(ClaimRejected):
+            await WorktreeManager(session, BrokenExecutor()).create_for_run(
+                SimpleNamespace(remote_workspace_root="/fake/work"), SimpleNamespace(id=run_id)
+            )
+
     import asyncio
 
     from app.core.redaction import Redactor
