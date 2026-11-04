@@ -11,9 +11,22 @@ from app.tools.worktree import WorktreeManager, WorktreeRef
 class Session:
     def __init__(self, collision=None):
         self.collision = collision
+        self.run = None
+
+    def in_transaction(self):
+        return False
+
+    def begin(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        pass
 
     async def scalar(self, statement):
-        return self.collision
+        return self.run if self.run is not None else self.collision
 
     async def flush(self):
         pass
@@ -45,9 +58,14 @@ async def test_evidence_before_cleanup(fail):
         order.append("persist")
         if fail:
             raise RuntimeError("store failed")
+        return "a" * 40
 
-    run = SimpleNamespace(id=1, worktree_path="/work/run-1", branch_name="ao/run-1")
-    manager = WorktreeManager(Session(), Executor())
+    run = SimpleNamespace(
+        id=1, worktree_path="/work/run-1", branch_name="ao/run-1", cleanup_status=None
+    )
+    session = Session()
+    session.run = run
+    manager = WorktreeManager(session, Executor())
     if fail:
         with pytest.raises(RuntimeError):
             await manager.persist_and_cleanup(None, run, persist)

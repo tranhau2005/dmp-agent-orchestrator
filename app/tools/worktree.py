@@ -80,14 +80,42 @@ class WorktreeManager:
     async def persist_and_cleanup(self, repository, run: Run, persist_evidence) -> None:
         if not run.worktree_path or not run.branch_name:
             raise SetupFailure("run has no worktree")
-        # Evidence must be committed independently before destructive cleanup begins.
-        await persist_evidence(run)
-        result = await self.executor.run_repo_command(
-            repository,
-            ("git", "worktree", "remove", run.worktree_path),
-            classification="worktree_cleanup",
-            run_id=run.id,
-        )
-        run.cleanup_status = "failed" if result.exit_status else "complete"
-        run.cleanup_failure_reason = "worktree removal failed" if result.exit_status else None
-        await self.session.flush()
+        if self.session.in_transaction():
+            raise RuntimeError("cleanup requires a fresh session")
+        # The callback must commit artifacts, logs and structured result before returning a SHA.
+        resulting_sha = await persist_evidence(run)
+        if not resulting_sha:
+            raise SetupFailure("resulting commit was not recorded")
+        async with self.session.begin():
+            locked = await self.session.scalar(
+                select(Run).where(Run.id == run.id).with_for_update()
+            )
+            if locked is None or locked.worktree_path != run.worktree_path:
+                raise ClaimRejected("worktree assignment changed")
+            if locked.cleanup_status in ("pending", "complete"):
+                raise ClaimRejected("worktree cleanup already started")
+            locked.resulting_commit_sha = resulting_sha
+            locked.cleanup_status = "pending"
+        try:
+            result = await self.executor.run_repo_command(
+                repository,
+                ("git", "worktree", "remove", run.worktree_path),
+                classification="worktree_cleanup",
+                run_id=run.id,
+            )
+            if result.exit_status:
+                raise SetupFailure("worktree removal failed")
+        except Exception as exc:
+            async with self.session.begin():
+                locked = await self.session.scalar(
+                    select(Run).where(Run.id == run.id).with_for_update()
+                )
+                locked.cleanup_status = "failed"
+                locked.cleanup_failure_reason = "worktree removal failed or outcome uncertain"
+            raise SetupFailure("worktree cleanup failed") from exc
+        async with self.session.begin():
+            locked = await self.session.scalar(
+                select(Run).where(Run.id == run.id).with_for_update()
+            )
+            locked.cleanup_status = "complete"
+            locked.cleanup_failure_reason = None
