@@ -279,3 +279,71 @@ async def test_context_defaults_are_audited_with_transaction():
         )
         assert audit.decision_or_action == "context_defaults_applied"
     await engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="requires isolated PostgreSQL")
+async def test_started_binding_rejected_by_database():
+    from datetime import UTC, datetime
+
+    from sqlalchemy.exc import DBAPIError
+
+    engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        async with session.begin():
+            repo = models.RemoteRepository(
+                repo_url="ssh://example.test/binding",
+                ssh_host="example.test",
+                ssh_host_key_policy="test",
+                canonical_repo_path="/test",
+                default_branch="main",
+                secret_references={},
+                remote_workspace_root="/work",
+                created_by="test",
+            )
+            session.add(repo)
+            await session.flush()
+            job = models.Job(
+                repository_id=repo.id,
+                base_revision="main",
+                objective="test",
+                execution_policy={},
+                status="queued",
+                created_by="test",
+            )
+            session.add(job)
+            await session.flush()
+            task = models.Task(
+                job_id=job.id,
+                task_key="binding",
+                instructions="test",
+                spec_references=[],
+                validation_gates=[],
+                retry_policy={},
+                timeout_policy={},
+                state="queued",
+            )
+            session.add(task)
+            await session.flush()
+            run = models.Run(
+                task_id=task.id,
+                attempt_no=1,
+                provider_identity="kiro",
+                adapter_version="1",
+                protocol_version="1",
+                base_commit_sha="old",
+                context_hash="hash",
+                status="running",
+                started_at=datetime.now(UTC),
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+    async with factory() as session:
+        with pytest.raises(DBAPIError):
+            async with session.begin():
+                run = await session.get(models.Run, run_id)
+                run.base_commit_sha = "new"
+    async with factory() as session:
+        assert (await session.get(models.Run, run_id)).base_commit_sha == "old"
+    await engine.dispose()
