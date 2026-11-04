@@ -16,7 +16,7 @@ class Rows:
 
 class Session:
     def __init__(self, queued, active):
-        self.rows = iter([Rows(queued), Rows(active)])
+        self.rows = iter([Rows(queued), Rows(active), Rows([])])
 
     async def __aenter__(self):
         return self
@@ -50,3 +50,16 @@ async def test_recovery_blocks_until_all_active_reconciled(active_set, success):
             await coordinator.recover()
         with pytest.raises(UncertainTransition):
             coordinator.require_ready()
+
+
+async def test_orphaned_running_task_blocks_recovery():
+    async def reconcile(run_id):
+        return True
+
+    session = Session([], [])
+    session.rows = iter([Rows([]), Rows([]), Rows([42])])
+    coordinator = RecoveryCoordinator(lambda: session, reconcile, 60)
+    with pytest.raises(UncertainTransition, match="without active runs"):
+        await coordinator.recover()
+    with pytest.raises(UncertainTransition):
+        coordinator.require_ready()

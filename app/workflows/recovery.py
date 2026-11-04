@@ -3,7 +3,7 @@
 import asyncio
 from collections.abc import Awaitable, Callable
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 
 from app.core.exceptions import UncertainTransition
 from app.core.models import Run, Task
@@ -35,6 +35,22 @@ class RecoveryCoordinator:
                     )
                 ).all()
             )
+            orphans = list(
+                (
+                    await session.scalars(
+                        select(Task.id).where(
+                            Task.state == "running",
+                            ~exists(
+                                select(Run.id).where(
+                                    Run.task_id == Task.id, Run.status.in_(["queued", "running"])
+                                )
+                            ),
+                        )
+                    )
+                ).all()
+            )
+        if orphans:
+            raise UncertainTransition("running tasks without active runs require reconciliation")
         try:
             async with asyncio.timeout(self.timeout):
                 for run_id in active:
