@@ -251,6 +251,29 @@ async def test_rejected_actions_are_audited_without_state_change():
     await audit_service.require_certain(task_id)
     async with factory() as session:
         assert (await session.get(models.Task, task_id)).state == "ready"
+        job_id = (await session.get(models.Task, task_id)).job_id
+
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.core.exceptions import ClaimRejected
+    from app.tests.test_scheduler import FakeRedis
+    from app.workflows.scheduler import Scheduler
+
+    scheduler = Scheduler(
+        factory, FakeRedis(), 60, SimpleNamespace(require_ready=lambda: None), audit_service
+    )
+
+    async def attempt():
+        try:
+            return await scheduler.claim(job_id, task_id, actor="test", correlation_id=str(uuid4()))
+        except ClaimRejected:
+            return None
+
+    claims = await asyncio.gather(attempt(), attempt())
+    assert sum(claim is not None for claim in claims) == 1
+    async with factory() as session:
+        assert (await session.get(models.Task, task_id)).state == "running"
     await engine.dispose()
 
 
