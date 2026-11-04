@@ -400,4 +400,28 @@ async def test_started_binding_rejected_by_database():
                 run.base_commit_sha = "new"
     async with factory() as session:
         assert (await session.get(models.Run, run_id)).base_commit_sha == "old"
+
+    import asyncio
+
+    from app.core.redaction import Redactor
+    from app.services.runs.events import EventService
+
+    async def produce(index):
+        async with factory() as session:
+            async with session.begin():
+                await EventService(session, Redactor(["secret"]), 1024).emit(
+                    run_id, "output", "fake", {"value": "secret"}, str(index)
+                )
+
+    await asyncio.gather(*(produce(i) for i in range(12)))
+    async with factory() as session:
+        events = (
+            await session.scalars(
+                select(models.Event)
+                .where(models.Event.run_id == run_id)
+                .order_by(models.Event.sequence_no)
+            )
+        ).all()
+        assert [event.sequence_no for event in events] == list(range(1, 13))
+        assert all(event.payload_redacted == {"value": "[REDACTED]"} for event in events)
     await engine.dispose()
