@@ -513,4 +513,19 @@ async def test_started_binding_rejected_by_database():
         ).all()
         assert [event.sequence_no for event in events] == list(range(1, 13))
         assert all(event.payload_redacted == {"value": "[REDACTED]"} for event in events)
+    from sqlalchemy import delete
+
+    async with factory() as session:
+        async with session.begin():
+            await session.execute(
+                delete(models.Event).where(
+                    models.Event.run_id == run_id, models.Event.sequence_no <= 5
+                )
+            )
+    async with factory() as session:
+        service = EventService(session, Redactor([]), 1024)
+        gap = await service.replay(run_id, 0)
+        assert gap.gap and gap.earliest_retained == 6
+        suffix = await service.replay(run_id, 8)
+        assert not suffix.gap and [event.sequence_no for event in suffix.events] == [9, 10, 11, 12]
     await engine.dispose()
