@@ -79,3 +79,29 @@ def test_replay_when_all_events_were_removed():
     result = replay([], 3, next_sequence=8)
     assert result.gap
     assert result.earliest_retained == 8
+
+
+async def test_stream_replays_after_last_sequence_and_reports_gap(monkeypatch):
+    from app.services.runs.events import EventService, EventStream, Replay
+
+    calls = []
+
+    class Session:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+    async def fake_replay(self, run_id, after):
+        calls.append(after)
+        if len(calls) == 1:
+            return Replay([SimpleNamespace(sequence_no=after + 1)], 1, False)
+        return Replay([], after + 3, True)
+
+    monkeypatch.setattr(EventService, "replay", fake_replay)
+    stream = EventStream(Session, Redactor([]), 100, 0.01).stream(1, 0)
+    assert (await anext(stream)).events[0].sequence_no == 1
+    assert (await anext(stream)).gap
+    assert calls == [0, 1]
+    await stream.aclose()

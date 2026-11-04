@@ -3,7 +3,7 @@
 import json
 from dataclasses import dataclass
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.core.exceptions import LimitExceeded
 from app.core.models import Event, Run
@@ -63,14 +63,53 @@ class EventService:
         return event
 
     async def replay(self, run_id: int, after: int) -> Replay:
+        run = await self.session.scalar(
+            select(Run).where(Run.id == run_id).with_for_update(read=True)
+        )
+        if run is None:
+            raise LookupError("run not found")
+        earliest = await self.session.scalar(
+            select(func.min(Event.sequence_no)).where(Event.run_id == run_id)
+        )
+        if earliest is None:
+            earliest = run.next_event_sequence
         events = list(
             (
                 await self.session.scalars(
-                    select(Event).where(Event.run_id == run_id).order_by(Event.sequence_no)
+                    select(Event)
+                    .where(Event.run_id == run_id, Event.sequence_no > after)
+                    .order_by(Event.sequence_no)
                 )
             ).all()
         )
-        run = await self.session.get(Run, run_id)
-        if run is None:
-            raise LookupError("run not found")
-        return replay(events, after, run.next_event_sequence)
+        return Replay(events, earliest, after < earliest - 1)
+
+
+class EventStream:
+    """Poll committed events by sequence; reconnecting with a cursor may redeliver events."""
+
+    def __init__(self, session_factory, redactor: Redactor, max_bytes: int, poll_seconds: float):
+        if poll_seconds <= 0:
+            raise ValueError("poll interval must be positive")
+        self.session_factory = session_factory
+        self.redactor = redactor
+        self.max_bytes = max_bytes
+        self.poll_seconds = poll_seconds
+
+    async def stream(self, run_id: int, after: int):
+        import asyncio
+
+        cursor = after
+        while True:
+            async with self.session_factory() as session:
+                batch = await EventService(session, self.redactor, self.max_bytes).replay(
+                    run_id, cursor
+                )
+            if batch.gap:
+                yield batch
+                return
+            if batch.events:
+                yield batch
+                cursor = batch.events[-1].sequence_no
+            else:
+                await asyncio.sleep(self.poll_seconds)
