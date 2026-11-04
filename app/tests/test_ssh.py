@@ -75,4 +75,4 @@ async def test_ssh_overflow_is_recorded_and_rejected(monkeypatch):
     with pytest.raises(SetupFailure):
         await executor.run_repo_command(repo, ("git", "status"), classification="test", run_id=1)
     assert records[0].exit_status == -1
-    assert records[0].stdout == "xxxx"
+    assert records[0].stdout == ""

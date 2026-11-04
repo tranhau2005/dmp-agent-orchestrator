@@ -104,7 +104,7 @@ class OpenSSHExecutor:
             datetime.now(UTC),
             status,
             run_id,
-            bytes(output[: self.config.max_output_bytes]).decode(errors="replace"),
+            "" if failure is not None else bytes(output).decode(errors="replace"),
         )
         await self.record(
             CommandRecord(
