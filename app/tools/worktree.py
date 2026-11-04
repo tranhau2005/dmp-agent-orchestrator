@@ -113,6 +113,14 @@ class WorktreeManager:
             r"[0-9a-f]{40}|[0-9a-f]{64}", resulting_sha
         ):
             raise SetupFailure("resulting commit SHA was not recorded")
+        head = await self.executor.run_repo_command(
+            repository,
+            ("git", "-C", run.worktree_path, "rev-parse", "--verify", "HEAD^{commit}"),
+            classification="worktree_verify",
+            run_id=run.id,
+        )
+        if head.exit_status or head.stdout.strip() != resulting_sha:
+            raise SetupFailure("resulting commit does not match worktree HEAD")
         async with self.session.begin():
             locked = await self.session.scalar(
                 select(Run).where(Run.id == run.id).with_for_update()

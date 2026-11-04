@@ -52,7 +52,9 @@ async def test_evidence_before_cleanup(fail):
     class Executor:
         async def run_repo_command(self, *args, **kwargs):
             if kwargs["classification"] == "worktree_verify":
-                return SimpleNamespace(exit_status=0, stdout="/work/run-1")
+                argv = args[1]
+                output = "a" * 40 if argv[0] == "git" else "/work/run-1"
+                return SimpleNamespace(exit_status=0, stdout=output)
             order.append("remove")
             return SimpleNamespace(exit_status=0)
 
@@ -108,3 +110,26 @@ async def test_worktree_rejects_unmatched_verification_before_remote_or_storage(
             SimpleNamespace(id=2),
             VerifiedRepository(1, "fake.test", "ssh://fake.test/repo", "/repo", "a" * 40),
         )
+
+
+async def test_cleanup_rejects_commit_not_at_worktree_head():
+    from app.core.exceptions import SetupFailure
+
+    calls = []
+
+    class Executor:
+        async def run_repo_command(self, repository, argv, **kwargs):
+            calls.append(argv)
+            return SimpleNamespace(
+                exit_status=0, stdout="b" * 40 if argv[0] == "git" else "/work/run-1"
+            )
+
+    async def persist(run, files, findings):
+        return "a" * 40
+
+    run = SimpleNamespace(
+        id=1, worktree_path="/work/run-1", branch_name="ao/run-1", cleanup_status=None
+    )
+    with pytest.raises(SetupFailure, match="does not match"):
+        await WorktreeManager(Session(), Executor()).persist_and_cleanup(None, run, [], persist)
+    assert all("remove" not in command for command in calls)
