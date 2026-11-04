@@ -51,3 +51,36 @@ async def test_failed_setup_is_audited(failure):
             correlation_id="test",
         )
     assert session.audit[0].decision_or_action == "setup_failure"
+
+
+async def test_successful_setup_returns_bound_verification():
+    sha = "a" * 40
+    repository = SimpleNamespace(
+        ssh_host="fake.test", repo_url="ssh://fake.test/repo", canonical_repo_path="/repo"
+    )
+
+    class Executor:
+        async def verify_host_identity(self, repository, run_id):
+            return True
+
+        async def run_repo_command(self, *args, **kwargs):
+            return SimpleNamespace(exit_status=0, stdout="/repo")
+
+        async def resolve_revision(self, repository, revision, run_id):
+            return sha
+
+    result = await verify_run_setup(
+        Session,
+        Executor(),
+        repository,
+        revision="main",
+        base_sha=sha,
+        run_id=3,
+        correlation_id="test",
+    )
+    assert (result.run_id, result.repo_url, result.canonical_path, result.base_sha) == (
+        3,
+        repository.repo_url,
+        "/repo",
+        sha,
+    )

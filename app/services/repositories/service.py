@@ -1,6 +1,7 @@
 """Register repository references and verify a run's remote checkout."""
 
 import re
+from dataclasses import dataclass
 from pathlib import PurePosixPath
 from typing import Protocol
 from urllib.parse import urlsplit
@@ -8,6 +9,15 @@ from urllib.parse import urlsplit
 from app.core.exceptions import SetupFailure
 from app.core.models import AuditRecord, RemoteRepository
 from app.schemas.contracts import RepositoryCreate
+
+
+@dataclass(frozen=True)
+class VerifiedRepository:
+    run_id: int
+    host: str
+    repo_url: str
+    canonical_path: str
+    base_sha: str
 
 
 class SecretReferencePolicy(Protocol):
@@ -45,7 +55,7 @@ async def verify_run_setup(
     base_sha: str,
     run_id: int,
     correlation_id: str,
-) -> None:
+) -> VerifiedRepository:
     """Report a failed verification durably before returning a typed setup failure."""
     try:
         if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base_sha):
@@ -60,6 +70,13 @@ async def verify_run_setup(
         resolved = await executor.resolve_revision(repository, revision, run_id)
         if resolved != base_sha:
             raise ValueError("base SHA mismatch")
+        return VerifiedRepository(
+            run_id,
+            repository.ssh_host,
+            repository.repo_url,
+            repository.canonical_repo_path,
+            base_sha,
+        )
     except Exception as exc:
         async with session_factory() as session:
             async with session.begin():

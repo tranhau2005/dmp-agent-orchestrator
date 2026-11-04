@@ -92,3 +92,19 @@ async def test_outside_paths_and_symlink_escapes_are_excluded():
     included, findings = await filter_changed_files(Executor(), None, run, files)
     assert included == [{"path": "ok.py"}]
     assert [finding["path"] for finding in findings] == ["../escape", "escape"]
+
+
+async def test_worktree_rejects_unmatched_verification_before_remote_or_storage():
+    from app.core.exceptions import SetupFailure
+    from app.services.repositories.service import VerifiedRepository
+
+    manager = WorktreeManager(None, None)
+    repository = SimpleNamespace(
+        ssh_host="fake.test", repo_url="ssh://fake.test/repo", canonical_repo_path="/repo"
+    )
+    with pytest.raises(SetupFailure):
+        await manager.create_for_run(
+            repository,
+            SimpleNamespace(id=2),
+            VerifiedRepository(1, "fake.test", "ssh://fake.test/repo", "/repo", "a" * 40),
+        )

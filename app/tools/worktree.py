@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.exceptions import ClaimRejected, SetupFailure
 from app.core.models import Run
+from app.services.repositories.service import VerifiedRepository
 
 
 @dataclass(frozen=True)
@@ -34,7 +35,16 @@ class WorktreeManager:
         if collision is not None:
             raise ClaimRejected("worktree or branch already assigned")
 
-    async def create_for_run(self, repository, run: Run) -> WorktreeRef:
+    async def create_for_run(
+        self, repository, run: Run, verification: VerifiedRepository
+    ) -> WorktreeRef:
+        if (
+            verification.run_id != run.id
+            or verification.host != repository.ssh_host
+            or verification.repo_url != repository.repo_url
+            or verification.canonical_path != repository.canonical_repo_path
+        ):
+            raise SetupFailure("repository verification does not match run")
         if self.session.in_transaction():
             raise RuntimeError("worktree reservation requires a fresh session")
         async with self.session.begin():
@@ -43,6 +53,8 @@ class WorktreeManager:
             )
             if locked is None:
                 raise LookupError("run not found")
+            if locked.base_commit_sha != verification.base_sha:
+                raise SetupFailure("verified base SHA does not match run")
             if locked.worktree_path or locked.branch_name:
                 raise ClaimRejected("run already has a worktree assignment")
             root = PurePosixPath(repository.remote_workspace_root)

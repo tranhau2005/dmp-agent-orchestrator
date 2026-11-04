@@ -471,6 +471,7 @@ async def test_started_binding_rejected_by_database():
     from types import SimpleNamespace
 
     from app.core.exceptions import ClaimRejected, SetupFailure
+    from app.services.repositories.service import VerifiedRepository
     from app.tools.worktree import WorktreeManager
 
     class BrokenExecutor:
@@ -480,7 +481,16 @@ async def test_started_binding_rejected_by_database():
     async with factory() as session:
         with pytest.raises(SetupFailure, match="worktree creation failed"):
             await WorktreeManager(session, BrokenExecutor()).create_for_run(
-                SimpleNamespace(remote_workspace_root="/fake/work"), SimpleNamespace(id=run_id)
+                SimpleNamespace(
+                    remote_workspace_root="/fake/work",
+                    ssh_host="example.test",
+                    repo_url="ssh://example.test/binding",
+                    canonical_repo_path="/test",
+                ),
+                SimpleNamespace(id=run_id),
+                VerifiedRepository(
+                    run_id, "example.test", "ssh://example.test/binding", "/test", "old"
+                ),
             )
     async with factory() as session:
         persisted = await session.get(models.Run, run_id)
@@ -488,7 +498,16 @@ async def test_started_binding_rejected_by_database():
     async with factory() as session:
         with pytest.raises(ClaimRejected):
             await WorktreeManager(session, BrokenExecutor()).create_for_run(
-                SimpleNamespace(remote_workspace_root="/fake/work"), SimpleNamespace(id=run_id)
+                SimpleNamespace(
+                    remote_workspace_root="/fake/work",
+                    ssh_host="example.test",
+                    repo_url="ssh://example.test/binding",
+                    canonical_repo_path="/test",
+                ),
+                SimpleNamespace(id=run_id),
+                VerifiedRepository(
+                    run_id, "example.test", "ssh://example.test/binding", "/test", "old"
+                ),
             )
 
     import asyncio
