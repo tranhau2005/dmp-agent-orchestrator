@@ -196,7 +196,12 @@ async def test_rejected_actions_are_audited_without_state_change():
                 )
             )
         ).all()
-        assert sorted(actions) == ["contract_violation", "transition_rejected"]
+        assert sorted(actions) == [
+            "contract_violation",
+            "transition_pending",
+            "transition_rejected",
+            "transition_resolved",
+        ]
     from app.services.audit.service import AuditedTransitionService
 
     audit_service = AuditedTransitionService(factory, {(TaskState.QUEUED, TaskState.READY)})
