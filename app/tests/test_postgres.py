@@ -420,6 +420,8 @@ async def test_started_binding_rejected_by_database():
             session.add(run)
             await session.flush()
             run_id = run.id
+            repo_id = repo.id
+            job_id = job.id
             session.add(
                 models.ContextPackage(
                     run_id=run.id,
@@ -447,6 +449,16 @@ async def test_started_binding_rejected_by_database():
                 run.base_commit_sha = "new"
     async with factory() as session:
         assert (await session.get(models.Run, run_id)).base_commit_sha == "old"
+    async with factory() as session:
+        with pytest.raises(DBAPIError):
+            async with session.begin():
+                repository = await session.get(models.RemoteRepository, repo_id)
+                repository.ssh_host = "changed.example.test"
+    async with factory() as session:
+        with pytest.raises(DBAPIError):
+            async with session.begin():
+                job = await session.get(models.Job, job_id)
+                job.repository_id = 999999
     async with factory() as session:
         with pytest.raises(DBAPIError):
             async with session.begin():
