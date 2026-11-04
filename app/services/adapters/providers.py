@@ -41,6 +41,7 @@ class CLIAdapter:
 
     async def start_run(self, inp: AdapterRunInput) -> RunStartAck:
         inp = inp.model_copy(deep=True)
+        inp.validate_instructions()
         if ContextPackager({}).context_hash(inp.context) != inp.context.context_hash:
             raise SetupFailure("context hash mismatch")
         ref = await self.transport.start(self.provider, inp)
@@ -53,6 +54,7 @@ class CLIAdapter:
                 "adapter_version": self.adapter_version,
                 "worktree_ref": inp.worktree_ref,
                 "context_hash": inp.context.context_hash,
+                "instruction_hash": inp.instruction_hash,
             },
         )
         return RunStartAck(accepted=True, provider_run_ref=ref)

@@ -440,6 +440,7 @@ async def test_started_binding_rejected_by_database():
                 )
             )
             await session.flush()
+            run.instruction_hash = "a" * 64
             run.started_at = datetime.now(UTC)
             run.status = "running"
     async with factory() as session:
@@ -528,4 +529,124 @@ async def test_started_binding_rejected_by_database():
         assert gap.gap and gap.earliest_retained == 6
         suffix = await service.replay(run_id, 8)
         assert not suffix.gap and [event.sequence_no for event in suffix.events] == [9, 10, 11, 12]
+    await engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="requires isolated PostgreSQL")
+async def test_run_start_persists_and_locks_instruction_hash():
+    from uuid import uuid4
+
+    from sqlalchemy.exc import DBAPIError
+
+    from app.core.exceptions import SetupFailure
+    from app.services.adapters.instructions import TaskInstructions
+    from app.services.runs.binding import RunBindingService
+    from app.tools.context import ContextPackager
+
+    engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        async with session.begin():
+            repo = models.RemoteRepository(
+                repo_url="ssh://example.test/instructions",
+                ssh_host="example.test",
+                ssh_host_key_policy="fake",
+                canonical_repo_path="/fake",
+                default_branch="main",
+                secret_references={},
+                remote_workspace_root="/work",
+                created_by="test",
+            )
+            session.add(repo)
+            await session.flush()
+            job = models.Job(
+                repository_id=repo.id,
+                base_revision="main",
+                objective="fake objective",
+                execution_policy={},
+                status="queued",
+                created_by="test",
+            )
+            session.add(job)
+            await session.flush()
+            task = models.Task(
+                job_id=job.id,
+                task_key="instructions",
+                instructions="fake instruction",
+                spec_references=[{"ref": "fake"}],
+                validation_gates=[],
+                retry_policy={},
+                timeout_policy={},
+                state="queued",
+            )
+            session.add(task)
+            await session.flush()
+            run = models.Run(
+                task_id=task.id,
+                attempt_no=1,
+                provider_identity="kiro",
+                adapter_version="1",
+                protocol_version="1",
+                base_commit_sha="a" * 40,
+                context_hash="",
+                status="queued",
+                worktree_path=f"/work/fake-{uuid4()}",
+            )
+            session.add(run)
+            await session.flush()
+            run_id, task_id, job_id = run.id, task.id, job.id
+    packager = ContextPackager({"allowed_paths": [], "allowed_commands": [], "constraints": {}})
+    context = packager.build(
+        repository_identity={},
+        base_commit_sha="a" * 40,
+        job_id=job_id,
+        task_id=task_id,
+        spec_references=[],
+        execution_policy={},
+    )
+    async with factory() as session:
+        async with session.begin():
+            await RunBindingService(session).bind(run_id, context)
+    async with factory() as session:
+        async with session.begin():
+            task = await session.get(models.Task, task_id)
+            task.instructions = "   "
+    async with factory() as session:
+        with pytest.raises(SetupFailure):
+            async with session.begin():
+                await RunBindingService(session).start(run_id)
+    async with factory() as session:
+        async with session.begin():
+            task = await session.get(models.Task, task_id)
+            task.instructions = "fake instruction"
+    async with factory() as session:
+        async with session.begin():
+            await RunBindingService(session).start(run_id)
+    expected = TaskInstructions.from_task(
+        "fake instruction", "fake objective", [{"ref": "fake"}]
+    ).instruction_hash()
+    async with factory() as session:
+        run = await session.get(models.Run, run_id)
+        assert run.instruction_hash == expected
+        assert run.context_hash == context.context_hash
+    from app.services.adapters.input import build_adapter_input
+
+    async with factory() as session:
+        adapter_input = await build_adapter_input(
+            session, run_id, timeout_seconds=30, secret_references={}
+        )
+        assert adapter_input.instruction_hash == expected
+        assert adapter_input.instructions.task_instructions == "fake instruction"
+    async with factory() as session:
+        async with session.begin():
+            task = await session.get(models.Task, task_id)
+            task.instructions = "changed instruction"
+    async with factory() as session:
+        with pytest.raises(SetupFailure):
+            await build_adapter_input(session, run_id, timeout_seconds=30, secret_references={})
+    async with factory() as session:
+        with pytest.raises(DBAPIError):
+            async with session.begin():
+                run = await session.get(models.Run, run_id)
+                run.instruction_hash = "b" * 64
     await engine.dispose()

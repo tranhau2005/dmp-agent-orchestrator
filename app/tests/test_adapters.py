@@ -54,14 +54,25 @@ async def test_kiro_and_codex_use_injected_transport():
         spec_references=[],
         execution_policy={},
     )
+    from app.services.adapters.instructions import TaskInstructions
+
+    instructions = TaskInstructions.from_task("fake task", "fake objective", [])
     inp = AdapterRunInput(
-        run_id=3, context=package, worktree_ref="/fake", execution_policy={}, timeout_seconds=10
+        run_id=3,
+        context=package,
+        worktree_ref="/fake",
+        execution_policy={},
+        timeout_seconds=10,
+        instructions=instructions,
+        instruction_hash=instructions.instruction_hash(),
     )
     for adapter_type in (KiroAdapter, CodexAdapter):
         adapter = adapter_type(Transport(), "1", emit)
         ack = await adapter.start_run(inp)
         assert ack.provider_run_ref == adapter.provider + "-fake"
         assert events[-1][1]["context_hash"] == package.context_hash
+        assert events[-1][1]["instruction_hash"] == instructions.instruction_hash()
+        assert "fake task" not in str(events[-1])
 
 
 async def test_cli_transport_uses_configured_fake_process(monkeypatch):
@@ -172,6 +183,12 @@ async def test_remote_cli_streams_through_fake_launcher():
         worktree_ref="/fake/worktree",
         execution_policy={},
         timeout_seconds=5,
+    )
+    from app.services.adapters.instructions import TaskInstructions
+
+    instructions = TaskInstructions.from_task("fake task", "fake objective", [])
+    inp = inp.model_copy(
+        update={"instructions": instructions, "instruction_hash": instructions.instruction_hash()}
     )
     transport = LiveCLITransport(Launcher(), Codec(), ("fake-cli",), 1000)
     ref = await transport.start("kiro", inp)

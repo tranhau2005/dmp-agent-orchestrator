@@ -73,6 +73,7 @@ class CLITransport:
         return AdapterHealth.model_validate(await self._invoke("health", {}))
 
     async def start(self, provider: str, run_input: AdapterRunInput) -> str:
+        run_input.validate_instructions()
         result = await self._invoke(
             "start", {"provider": provider, "input": run_input.model_dump(mode="json")}
         )

@@ -95,6 +95,7 @@ class LiveCLITransport:
         )
 
     async def start(self, provider: str, run_input: AdapterRunInput) -> str:
+        run_input.validate_instructions()
         ref = str(run_input.run_id)
         if ref in self.runs or not self.argv or self.max_bytes <= 0:
             raise SetupFailure("duplicate run or invalid CLI configuration")

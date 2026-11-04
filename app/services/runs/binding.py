@@ -6,8 +6,9 @@ from sqlalchemy import select
 
 from app.core.exceptions import ImmutabilityError, SetupFailure
 from app.core.models import ContextPackage as StoredContext
-from app.core.models import Run
+from app.core.models import Job, Run, Task
 from app.schemas.contracts import ContextPackage
+from app.services.adapters.instructions import TaskInstructions
 from app.tools.context import ContextPackager
 
 
@@ -63,6 +64,22 @@ class RunBindingService:
             or ContextPackager({}).context_hash(package) != run.context_hash
         ):
             raise SetupFailure("run binding does not match context package")
+        task = await self.session.get(Task, run.task_id)
+        if task is None:
+            raise SetupFailure("run task or job not found")
+        job = await self.session.scalar(select(Job).where(Job.id == task.job_id).with_for_update())
+        task = await self.session.scalar(
+            select(Task)
+            .where(Task.id == run.task_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if job is None or task is None or task.job_id != job.id or package.job_id != job.id:
+            raise SetupFailure("run task or job changed")
+        instructions = TaskInstructions.from_task(
+            task.instructions, job.objective, task.spec_references
+        )
+        run.instruction_hash = instructions.instruction_hash()
         run.started_at = datetime.now(UTC)
         run.status = "running"
         await self.session.flush()
