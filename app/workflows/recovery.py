@@ -29,7 +29,11 @@ class RecoveryCoordinator:
                 ).all()
             )
             active = list(
-                (await session.scalars(select(Run.id).where(Run.status == "running"))).all()
+                (
+                    await session.scalars(
+                        select(Run.id).where(Run.status.in_(["queued", "running"]))
+                    )
+                ).all()
             )
         try:
             async with asyncio.timeout(self.timeout):
