@@ -11,8 +11,11 @@ class Redactor:
 
     def redact(self, value: Any) -> Any:
         if isinstance(value, str):
+            # Keep replacement markers opaque even when a configured pattern matches them.
             for pattern in self.patterns:
-                value = pattern.sub("[REDACTED]", value)
+                value = "[REDACTED]".join(
+                    pattern.sub("[REDACTED]", part) for part in value.split("[REDACTED]")
+                )
             return value
         if isinstance(value, Mapping):
             return {self.redact(k): self.redact(v) for k, v in value.items()}
