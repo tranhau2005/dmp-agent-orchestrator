@@ -51,10 +51,12 @@ async def test_evidence_before_cleanup(fail):
 
     class Executor:
         async def run_repo_command(self, *args, **kwargs):
+            if kwargs["classification"] == "worktree_verify":
+                return SimpleNamespace(exit_status=0, stdout="/work/run-1")
             order.append("remove")
             return SimpleNamespace(exit_status=0)
 
-    async def persist(run):
+    async def persist(run, included, findings):
         order.append("persist")
         if fail:
             raise RuntimeError("store failed")
@@ -68,8 +70,25 @@ async def test_evidence_before_cleanup(fail):
     manager = WorktreeManager(session, Executor())
     if fail:
         with pytest.raises(RuntimeError):
-            await manager.persist_and_cleanup(None, run, persist)
+            await manager.persist_and_cleanup(None, run, [], persist)
         assert order == ["persist"]
     else:
-        await manager.persist_and_cleanup(None, run, persist)
+        await manager.persist_and_cleanup(None, run, [], persist)
         assert order == ["persist", "remove"]
+
+
+async def test_outside_paths_and_symlink_escapes_are_excluded():
+    from app.tools.worktree import filter_changed_files
+
+    class Executor:
+        async def run_repo_command(self, repository, argv, **kwargs):
+            path = argv[-1]
+            if path.endswith("escape"):
+                return SimpleNamespace(exit_status=0, stdout="/outside/secret")
+            return SimpleNamespace(exit_status=0, stdout=path)
+
+    run = SimpleNamespace(id=1, worktree_path="/work/run-1")
+    files = [{"path": "ok.py"}, {"path": "../escape"}, {"path": "escape"}]
+    included, findings = await filter_changed_files(Executor(), None, run, files)
+    assert included == [{"path": "ok.py"}]
+    assert [finding["path"] for finding in findings] == ["../escape", "escape"]

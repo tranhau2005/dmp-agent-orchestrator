@@ -78,13 +78,18 @@ class WorktreeManager:
             raise SetupFailure("worktree creation failed") from exc
         return ref
 
-    async def persist_and_cleanup(self, repository, run: Run, persist_evidence) -> None:
+    async def persist_and_cleanup(
+        self, repository, run: Run, changed_files, persist_evidence
+    ) -> None:
         if not run.worktree_path or not run.branch_name:
             raise SetupFailure("run has no worktree")
         if self.session.in_transaction():
             raise RuntimeError("cleanup requires a fresh session")
-        # The callback must commit artifacts, logs and structured result before returning a SHA.
-        resulting_sha = await persist_evidence(run)
+        included, findings = await filter_changed_files(
+            self.executor, repository, run, changed_files
+        )
+        # The callback commits filtered results, security findings, artifacts and logs.
+        resulting_sha = await persist_evidence(run, included, findings)
         if not isinstance(resulting_sha, str) or not re.fullmatch(
             r"[0-9a-f]{40}|[0-9a-f]{64}", resulting_sha
         ):
@@ -122,3 +127,41 @@ class WorktreeManager:
             )
             locked.cleanup_status = "complete"
             locked.cleanup_failure_reason = None
+
+
+async def filter_changed_files(executor, repository, run: Run, changed_files: list[dict]):
+    """Resolve paths remotely, excluding paths that escape the assigned worktree."""
+    if not run.worktree_path:
+        raise SetupFailure("run has no worktree")
+    root_result = await executor.run_repo_command(
+        repository,
+        ("realpath", "-e", "--", run.worktree_path),
+        classification="worktree_verify",
+        run_id=run.id,
+    )
+    if root_result.exit_status:
+        raise SetupFailure("cannot resolve worktree root")
+    root = PurePosixPath(root_result.stdout.strip())
+    if not root.is_absolute():
+        raise SetupFailure("invalid resolved worktree root")
+    included, findings = [], []
+    for item in changed_files:
+        path = item.get("path")
+        if not isinstance(path, str) or not path:
+            raise SetupFailure("changed file has no path")
+        relative = PurePosixPath(path)
+        if relative.is_absolute() or ".." in relative.parts:
+            findings.append({"kind": "out_of_worktree", "path": path, "excluded": True})
+            continue
+        result = await executor.run_repo_command(
+            repository,
+            ("realpath", "-m", "--", str(root / relative)),
+            classification="worktree_verify",
+            run_id=run.id,
+        )
+        resolved = PurePosixPath(result.stdout.strip())
+        if result.exit_status or not resolved.is_absolute() or not resolved.is_relative_to(root):
+            findings.append({"kind": "out_of_worktree", "path": path, "excluded": True})
+        else:
+            included.append(item)
+    return included, findings
