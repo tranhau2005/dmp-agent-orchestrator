@@ -198,3 +198,84 @@ async def test_rejected_actions_are_audited_without_state_change():
         ).all()
         assert sorted(actions) == ["contract_violation", "transition_rejected"]
     await engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="requires isolated PostgreSQL")
+async def test_submission_rolls_back_on_persistence_failure():
+    engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        async with session.begin():
+            repo = models.RemoteRepository(
+                repo_url="ssh://example.test/rollback",
+                ssh_host="example.test",
+                ssh_host_key_policy="test",
+                canonical_repo_path="/test",
+                default_branch="main",
+                secret_references={},
+                remote_workspace_root="/work",
+                created_by="test",
+            )
+            session.add(repo)
+            await session.flush()
+            repo_id = repo.id
+    request = JobSubmission(
+        repository_id=repo_id,
+        base_revision="main",
+        objective="test",
+        execution_policy=ExecutionPolicy(),
+        created_by="test",
+        tasks=[TaskSubmission(task_key="a", instructions="test")],
+    )
+    async with factory() as session:
+        service = JobService(session)
+
+        async def fail(_task):
+            raise RuntimeError("simulated storage failure")
+
+        service.repos.tasks.add = fail
+        with pytest.raises(RuntimeError, match="simulated"):
+            await service.submit(request)
+    async with factory() as session:
+        assert (
+            await session.scalars(select(models.Job).where(models.Job.repository_id == repo_id))
+        ).all() == []
+    await engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="requires isolated PostgreSQL")
+async def test_context_defaults_are_audited_with_transaction():
+    from uuid import uuid4
+
+    from app.tools.context import AuditedContextPackager, ContextPackager
+
+    engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    correlation_id = str(uuid4())
+    async with factory() as session:
+        async with session.begin():
+            packager = AuditedContextPackager(
+                ContextPackager({"allowed_paths": [], "allowed_commands": [], "constraints": {}}),
+                session,
+            )
+            package = await packager.build(
+                actor="test",
+                correlation_id=correlation_id,
+                repository_identity={},
+                base_commit_sha="x",
+                job_id=1,
+                task_id=2,
+                spec_references=[],
+                execution_policy={},
+            )
+            assert set(package.applied_defaults) == {
+                "allowed_paths",
+                "allowed_commands",
+                "constraints",
+            }
+    async with factory() as session:
+        audit = await session.scalar(
+            select(models.AuditRecord).where(models.AuditRecord.correlation_id == correlation_id)
+        )
+        assert audit.decision_or_action == "context_defaults_applied"
+    await engine.dispose()

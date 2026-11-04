@@ -66,3 +66,30 @@ class ContextPackager:
 
     def context_hash(self, package: ContextPackage) -> str:
         return hashlib.sha256(self.canonicalize(package)).hexdigest()
+
+
+class AuditedContextPackager:
+    """Build a package and record applied defaults in the caller's transaction."""
+
+    def __init__(self, packager: ContextPackager, session):
+        self.packager = packager
+        self.session = session
+
+    async def build(self, *, actor: str, correlation_id: str, **kwargs) -> ContextPackage:
+        from app.core.models import AuditRecord
+
+        if not self.session.in_transaction():
+            raise RuntimeError("context packaging requires a caller-owned transaction")
+        package = self.packager.build(**kwargs)
+        if package.applied_defaults:
+            self.session.add(
+                AuditRecord(
+                    actor_identity=actor,
+                    target_identity=f"task:{package.task_id}",
+                    decision_or_action="context_defaults_applied",
+                    correlation_id=correlation_id,
+                    reason=", ".join(sorted(package.applied_defaults)),
+                    transition_certainty="certain",
+                )
+            )
+        return package

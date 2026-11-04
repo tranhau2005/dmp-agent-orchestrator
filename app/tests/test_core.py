@@ -131,3 +131,60 @@ def test_graph_validates_dependencies(indices):
     elif not tasks or any(dep >= len(tasks) or dep == i for i, dep in enumerate(indices)):
         with pytest.raises(GraphValidationError):
             validate_graph(request)
+
+
+@given(
+    st.integers(min_value=0, max_value=5),
+    st.sets(
+        st.tuples(st.integers(min_value=0, max_value=5), st.integers(min_value=0, max_value=5)),
+        max_size=12,
+    ),
+)
+def test_arbitrary_graphs_match_independent_cycle_oracle(size, edges):
+    tasks = [
+        TaskSubmission(
+            task_key=str(i),
+            instructions="",
+            depends_on=[str(source) for source, target in sorted(edges) if target == i],
+        )
+        for i in range(size)
+    ]
+    request = JobSubmission(
+        repository_id=1,
+        base_revision="a",
+        objective="x",
+        execution_policy=ExecutionPolicy(),
+        created_by="test",
+        tasks=tasks,
+    )
+    missing = any(source >= size for source, target in edges if target < size)
+    visiting, visited = set(), set()
+
+    def cyclic(node):
+        if node in visiting:
+            return True
+        if node in visited:
+            return False
+        visiting.add(node)
+        if any(cyclic(source) for source, target in edges if target == node and source < size):
+            return True
+        visiting.remove(node)
+        visited.add(node)
+        return False
+
+    valid = bool(size) and not missing and not any(cyclic(i) for i in range(size))
+    if valid:
+        validate_graph(request)
+    else:
+        with pytest.raises(GraphValidationError):
+            validate_graph(request)
+
+
+async def test_event_repository_requires_redaction():
+    from app.core.exceptions import ConfigurationError
+    from app.core.models import Event
+    from app.core.repositories import EventRepository
+
+    event = Event(payload_redacted={"message": "secret-fake"})
+    with pytest.raises(ConfigurationError):
+        await EventRepository(None, None).add(event)
