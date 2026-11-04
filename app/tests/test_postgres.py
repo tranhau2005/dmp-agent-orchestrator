@@ -197,6 +197,28 @@ async def test_rejected_actions_are_audited_without_state_change():
             )
         ).all()
         assert sorted(actions) == ["contract_violation", "transition_rejected"]
+    from app.services.audit.service import AuditedTransitionService
+
+    audit_service = AuditedTransitionService(factory, {(TaskState.QUEUED, TaskState.READY)})
+    transition_correlation = str(uuid4())
+    await audit_service.transition(
+        task_id, TaskState.READY, actor="test", correlation_id=transition_correlation
+    )
+    await audit_service.require_certain(task_id)
+    async with factory() as session:
+        assert (await session.get(models.Task, task_id)).state == "ready"
+        records = (
+            await session.scalars(
+                select(models.AuditRecord).where(
+                    models.AuditRecord.correlation_id == transition_correlation
+                )
+            )
+        ).all()
+        assert {r.decision_or_action for r in records} == {
+            "transition_pending",
+            "transition_accepted",
+            "transition_resolved",
+        }
     await engine.dispose()
 
 
