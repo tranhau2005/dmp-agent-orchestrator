@@ -101,7 +101,14 @@ def test_provider_codec_uses_instructions_and_validates_output(provider):
         "failure_info": None,
     }
     event = codec.event(json.dumps({"type": "result", "structured_result": result}).encode())
-    assert codec.result([event])["status"] == "succeeded"
+    from app.services.adapters.contract import RunEvent
+
+    completed = RunEvent(event_type=codec.completion_event, payload={})
+    assert codec.result([event, completed])["status"] == "succeeded"
+    from app.core.exceptions import AdapterFailure
+
+    with pytest.raises(AdapterFailure):
+        codec.result([event])
 
 
 def test_provider_failure_cannot_be_overridden_by_prior_success():

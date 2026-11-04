@@ -9,6 +9,7 @@ from app.services.runs.result import validate_result
 
 class JSONLinesCodec:
     provider: str
+    completion_event: str
 
     def prompt(self, provider: str, run_input: AdapterRunInput) -> bytes:
         run_input.validate_instructions()
@@ -46,6 +47,8 @@ class JSONLinesCodec:
     def result(self, events: list[RunEvent]) -> object:
         if any(event.event_type in {"error", "turn.failed", "runError"} for event in events):
             raise AdapterFailure("provider reported failure")
+        if not events or events[-1].event_type != self.completion_event:
+            raise AdapterFailure("provider completion event is missing")
         for event in reversed(events):
             payload = event.payload
             item = payload.get("item")
@@ -65,7 +68,9 @@ class JSONLinesCodec:
 
 class KiroJSONLinesCodec(JSONLinesCodec):
     provider = "kiro"
+    completion_event = "runFinished"
 
 
 class CodexJSONLinesCodec(JSONLinesCodec):
     provider = "codex"
+    completion_event = "turn.completed"
