@@ -479,6 +479,21 @@ async def test_started_binding_rejected_by_database():
             raise RuntimeError("simulated disconnection")
 
     async with factory() as session:
+        with pytest.raises(SetupFailure, match="does not match run job"):
+            await WorktreeManager(session, BrokenExecutor()).create_for_run(
+                SimpleNamespace(
+                    id=repo_id + 999999,
+                    remote_workspace_root="/fake/work",
+                    ssh_host="example.test",
+                    repo_url="ssh://example.test/binding",
+                    canonical_repo_path="/test",
+                ),
+                SimpleNamespace(id=run_id),
+                VerifiedRepository(
+                    run_id, "example.test", "ssh://example.test/binding", "/test", "old"
+                ),
+            )
+    async with factory() as session:
         with pytest.raises(SetupFailure, match="worktree creation failed"):
             await WorktreeManager(session, BrokenExecutor()).create_for_run(
                 SimpleNamespace(
