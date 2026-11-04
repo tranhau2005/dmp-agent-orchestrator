@@ -41,8 +41,8 @@ class TaskInstructions(BaseModel):
             raise SetupFailure("task instructions and job objective are required")
         try:
             references = [json.loads(ref) for ref in self.spec_references]
-        except (TypeError, ValueError) as exc:
-            raise SetupFailure("invalid spec references") from exc
+        except (TypeError, ValueError):
+            raise SetupFailure("invalid spec references") from None
         payload = {
             "task_instructions": self.task_instructions,
             "job_objective": self.job_objective,

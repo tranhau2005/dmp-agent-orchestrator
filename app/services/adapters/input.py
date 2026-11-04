@@ -49,5 +49,5 @@ async def build_adapter_input(
             timeout_seconds=timeout_seconds,
             secret_references=secret_references,
         )
-    except ValidationError as exc:
-        raise SetupFailure("invalid adapter run input") from exc
+    except ValidationError:
+        raise SetupFailure("invalid adapter run input") from None
