@@ -1,5 +1,6 @@
 """Build provider input from the persisted run binding and source task."""
 
+from pydantic import ValidationError
 from sqlalchemy import select
 
 from app.core.exceptions import SetupFailure
@@ -37,13 +38,16 @@ async def build_adapter_input(
         or ContextPackager({}).context_hash(context) != run.context_hash
     ):
         raise SetupFailure("run instructions or context changed")
-    return AdapterRunInput(
-        run_id=run_id,
-        context=context,
-        instructions=instructions,
-        instruction_hash=run.instruction_hash,
-        worktree_ref=run.worktree_path,
-        execution_policy=context.execution_policy,
-        timeout_seconds=timeout_seconds,
-        secret_references=secret_references,
-    )
+    try:
+        return AdapterRunInput(
+            run_id=run_id,
+            context=context,
+            instructions=instructions,
+            instruction_hash=run.instruction_hash,
+            worktree_ref=run.worktree_path,
+            execution_policy=context.execution_policy,
+            timeout_seconds=timeout_seconds,
+            secret_references=secret_references,
+        )
+    except ValidationError as exc:
+        raise SetupFailure("invalid adapter run input") from exc

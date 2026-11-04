@@ -87,3 +87,43 @@ class PersistentAdapterRegistry:
                 )
             )
         return select_adapter(registrations, policy)
+
+
+async def register_contract_stubs(
+    session,
+    *,
+    adapter_version: str,
+    protocol_version: str,
+    execution_mode: str,
+    result_schema_version: str,
+    config_references: dict[str, str],
+) -> dict[str, Adapter]:
+    """Persist unavailable stub registrations using owner-supplied protocol configuration."""
+    from app.core.models import AdapterRegistry
+    from app.services.adapters.providers import AgyAdapter, OpenCodeAdapter
+
+    # NEEDS-OWNER: provider versions, execution mode and configuration references.
+    if not all((adapter_version, protocol_version, execution_mode, result_schema_version)):
+        raise ConfigurationError("stub protocol configuration is required")
+    stubs = {"agy": AgyAdapter(), "opencode": OpenCodeAdapter()}
+    for provider in stubs:
+        reference = config_references.get(provider)
+        if not reference:
+            raise ConfigurationError(f"missing configuration reference for {provider}")
+    if len({config_references[provider] for provider in stubs}) != len(stubs):
+        raise ConfigurationError("stub configuration references must be distinct")
+    for provider in stubs:
+        session.add(
+            AdapterRegistry(
+                provider_identity=provider,
+                adapter_version=adapter_version,
+                protocol_version=protocol_version,
+                execution_mode=execution_mode,
+                declared_capabilities=[],
+                config_reference=config_references[provider],
+                result_schema_version=result_schema_version,
+                health_state="unavailable",
+            )
+        )
+    await session.flush()
+    return {config_references[provider]: adapter for provider, adapter in stubs.items()}

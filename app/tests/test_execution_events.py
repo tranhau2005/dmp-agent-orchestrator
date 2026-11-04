@@ -105,3 +105,13 @@ async def test_stream_replays_after_last_sequence_and_reports_gap(monkeypatch):
     assert (await anext(stream)).gap
     assert calls == [0, 1]
     await stream.aclose()
+
+
+@given(
+    st.dictionaries(
+        st.text(max_size=10), st.one_of(st.none(), st.integers(), st.text()), max_size=8
+    )
+)
+def test_malformed_result_objects_are_never_successful(raw):
+    with pytest.raises(ResultValidationError):
+        validate_result(raw)

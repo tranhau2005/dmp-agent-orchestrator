@@ -195,3 +195,31 @@ async def test_remote_cli_streams_through_fake_launcher():
     events = [event async for event in transport.events(ref)]
     assert [event.payload["text"] for event in events] == ["first", "second"]
     assert await transport.result(ref) == {"count": 2}
+
+
+async def test_stub_registration_requires_configuration_and_stays_unavailable():
+    from app.services.adapters.registry import register_contract_stubs
+
+    class Session:
+        def __init__(self):
+            self.rows = []
+
+        def add(self, row):
+            self.rows.append(row)
+
+        async def flush(self):
+            pass
+
+    session = Session()
+    options = dict(
+        adapter_version="1", protocol_version="1", execution_mode="cli", result_schema_version="1"
+    )
+    with pytest.raises(ConfigurationError):
+        await register_contract_stubs(session, **options, config_references={"agy": "a"})
+    assert session.rows == []
+    adapters = await register_contract_stubs(
+        session, **options, config_references={"agy": "a", "opencode": "o"}
+    )
+    assert set(adapters) == {"a", "o"}
+    assert {row.provider_identity for row in session.rows} == {"agy", "opencode"}
+    assert all(row.health_state == "unavailable" for row in session.rows)
