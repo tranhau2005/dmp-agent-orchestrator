@@ -115,9 +115,8 @@ class LiveCLITransport:
                 if await process.wait():
                     raise AdapterFailure("provider process failed")
                 active.result = self.codec.result(active.events)
-        except Exception as exc:
+        except Exception:
             active.error = AdapterFailure("provider stream or result failed")
-            active.error.__cause__ = exc
             if process.returncode is None:
                 process.kill()
                 await process.wait()
