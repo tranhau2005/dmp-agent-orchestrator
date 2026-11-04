@@ -9,13 +9,14 @@ from app.core.models import AuditRecord, Job, Task
 
 
 class Scheduler:
-    def __init__(self, session_factory, redis, lease_seconds: int, recovery):
+    def __init__(self, session_factory, redis, lease_seconds: int, recovery, audit):
         if lease_seconds <= 0:
             raise ConfigurationError("claim lease must be positive")
         self.session_factory = session_factory
         self.redis = redis
         self.lease_seconds = lease_seconds
         self.recovery = recovery
+        self.audit = audit
 
     async def claim(self, job_id: int, task_id: int, *, actor: str, correlation_id: str) -> str:
         self.recovery.require_ready()
@@ -29,6 +30,8 @@ class Scheduler:
                 task = await session.scalar(
                     select(Task).where(Task.id == task_id, Task.job_id == job_id).with_for_update()
                 )
+                if task is not None:
+                    await self.audit._require_certain(session, task_id)
                 running = await session.scalar(
                     select(Task.id).where(Task.job_id == job_id, Task.state == "running").limit(1)
                 )

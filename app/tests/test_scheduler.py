@@ -53,7 +53,14 @@ class FakeSession:
 @given(st.integers(min_value=2, max_value=20))
 async def test_only_one_claim_wins(attempts):
     session, redis = FakeSession(), FakeRedis()
-    scheduler = Scheduler(lambda: session, redis, 60, SimpleNamespace(require_ready=lambda: None))
+
+    class Audit:
+        async def _require_certain(self, session, task_id):
+            pass
+
+    scheduler = Scheduler(
+        lambda: session, redis, 60, SimpleNamespace(require_ready=lambda: None), Audit()
+    )
     await scheduler.claim(1, 2, actor="test", correlation_id="test")
     for _ in range(attempts - 1):
         with pytest.raises(ClaimRejected):

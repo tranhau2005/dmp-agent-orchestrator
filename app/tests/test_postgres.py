@@ -219,6 +219,38 @@ async def test_rejected_actions_are_audited_without_state_change():
             "transition_accepted",
             "transition_resolved",
         }
+    from app.core.exceptions import UncertainTransition
+
+    class BrokenSession:
+        async def __aenter__(self):
+            raise RuntimeError("simulated failure after marker")
+
+        async def __aexit__(self, *args):
+            pass
+
+    calls = 0
+
+    def failing_factory():
+        nonlocal calls
+        calls += 1
+        return factory() if calls == 1 else BrokenSession()
+
+    failure_id = str(uuid4())
+    failing_service = AuditedTransitionService(
+        failing_factory, {(TaskState.READY, TaskState.RUNNING)}
+    )
+    with pytest.raises(UncertainTransition):
+        await failing_service.transition(
+            task_id, TaskState.RUNNING, actor="test", correlation_id=failure_id
+        )
+    with pytest.raises(UncertainTransition):
+        await audit_service.require_certain(task_id)
+    await audit_service.reconcile(
+        task_id, actor="test", correlation_id=failure_id, reason="verified ready"
+    )
+    await audit_service.require_certain(task_id)
+    async with factory() as session:
+        assert (await session.get(models.Task, task_id)).state == "ready"
     await engine.dispose()
 
 
