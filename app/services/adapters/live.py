@@ -2,6 +2,7 @@
 
 import asyncio
 import shlex
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -75,11 +76,18 @@ class ActiveRun:
 
 class LiveCLITransport:
     def __init__(
-        self, launcher: ProcessLauncher, codec: LiveCodec, argv: tuple[str, ...], max_bytes: int
+        self,
+        launcher: ProcessLauncher,
+        codec: LiveCodec,
+        argv: tuple[str, ...],
+        max_bytes: int,
+        health_probe: Callable[[], Awaitable[AdapterHealth]] | None = None,
     ):
         # NEEDS-OWNER: executable, flags, auth, and model remain deployment configuration.
         self.launcher, self.codec, self.argv, self.max_bytes = launcher, codec, argv, max_bytes
         self.runs: dict[str, ActiveRun] = {}
+        # NEEDS-OWNER: provide a probe for the provisioned host and provider.
+        self.health_probe = health_probe
 
     async def health(self) -> AdapterHealth:
         return AdapterHealth(
