@@ -17,6 +17,9 @@ class SSHConfig:
     user: str
     port: int = 22
     proxy_jump: str | None = None
+    # ASSUMPTION: same output and timeout defaults as the MVP execution limits.
+    max_output_bytes: int = 10 * 1024 * 1024
+    timeout_seconds: int = 1800
 
 
 @dataclass(frozen=True)
@@ -66,19 +69,42 @@ class OpenSSHExecutor:
         if self.config.proxy_jump:
             args.extend(["-J", self.config.proxy_jump])
         args.extend(["--", f"{self.config.user}@{repository.ssh_host}", remote])
+        if self.config.timeout_seconds <= 0 or self.config.max_output_bytes <= 0:
+            raise SetupFailure("invalid SSH output or timeout limit")
         started = datetime.now(UTC)
-        process = await asyncio.create_subprocess_exec(
-            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
-        )
-        output, _ = await process.communicate()
+        process = None
+        output = bytearray()
+        failure = None
+        status = -1
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL
+            )
+            async with asyncio.timeout(self.config.timeout_seconds):
+                while True:
+                    chunk = await process.stdout.read(
+                        min(65536, self.config.max_output_bytes + 1 - len(output))
+                    )
+                    if not chunk:
+                        break
+                    output.extend(chunk)
+                    if len(output) > self.config.max_output_bytes:
+                        raise SetupFailure("SSH output exceeds configured limit")
+                status = await process.wait()
+        except (OSError, TimeoutError, SetupFailure) as exc:
+            failure = exc
+        finally:
+            if process is not None and process.returncode is None:
+                process.kill()
+                await process.wait()
         result = CommandRecord(
             repository.ssh_host,
             classification,
             started,
             datetime.now(UTC),
-            process.returncode,
+            status,
             run_id,
-            output.decode(errors="replace"),
+            bytes(output[: self.config.max_output_bytes]).decode(errors="replace"),
         )
         await self.record(
             CommandRecord(
@@ -91,6 +117,8 @@ class OpenSSHExecutor:
                 self.redactor.redact(result.stdout),
             )
         )
+        if failure is not None:
+            raise SetupFailure("SSH command could not be completed") from failure
         return result
 
     async def verify_host_identity(self, repository, run_id: int) -> bool:
