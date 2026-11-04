@@ -30,10 +30,11 @@ class ProviderTransport(Protocol):
 class CLIAdapter:
     provider: str
 
-    def __init__(self, transport: ProviderTransport, adapter_version: str):
+    def __init__(self, transport: ProviderTransport, adapter_version: str, emit_start):
         # NEEDS-OWNER: CLI executable, flags, model, endpoint and authentication configuration.
         self.transport = transport
         self.adapter_version = adapter_version
+        self.emit_start = emit_start
 
     async def report_health(self) -> AdapterHealth:
         return await self.transport.health()
@@ -44,6 +45,15 @@ class CLIAdapter:
         ref = await self.transport.start(self.provider, inp)
         if not ref:
             raise SetupFailure("provider returned an empty run reference")
+        await self.emit_start(
+            inp.run_id,
+            {
+                "provider_identity": self.provider,
+                "adapter_version": self.adapter_version,
+                "worktree_ref": inp.worktree_ref,
+                "context_hash": inp.context.context_hash,
+            },
+        )
         return RunStartAck(accepted=True, provider_run_ref=ref)
 
     async def stream_events(self, provider_run_ref: str) -> AsyncIterator[RunEvent]:
