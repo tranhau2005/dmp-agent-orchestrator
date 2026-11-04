@@ -45,6 +45,9 @@ class FakeSession:
             return self.task.id if self.task.state == "running" else None
         return self.task
 
+    async def execute(self, query):
+        return SimpleNamespace(all=lambda: [])
+
     def add(self, record):
         self.audit.append(record)
 

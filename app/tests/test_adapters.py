@@ -62,3 +62,44 @@ async def test_kiro_and_codex_use_injected_transport():
         ack = await adapter.start_run(inp)
         assert ack.provider_run_ref == adapter.provider + "-fake"
         assert events[-1][1]["context_hash"] == package.context_hash
+
+
+async def test_cli_transport_uses_configured_fake_process(monkeypatch):
+    from app.services.adapters.cli import CLIConfig, CLITransport
+
+    class Stream:
+        def write(self, data):
+            assert data == b"encoded"
+
+        async def drain(self):
+            pass
+
+        def close(self):
+            pass
+
+        async def read(self, limit):
+            return b"fake-ref"
+
+    class Process:
+        stdin = Stream()
+        stdout = Stream()
+        returncode = None
+
+        async def wait(self):
+            self.returncode = 0
+            return 0
+
+    async def launch(*args, **kwargs):
+        assert args == ("fake-cli", "start")
+        return Process()
+
+    class Codec:
+        def encode(self, operation, payload):
+            return b"encoded"
+
+        def decode(self, operation, output):
+            return output.decode()
+
+    monkeypatch.setattr("app.services.adapters.cli.asyncio.create_subprocess_exec", launch)
+    transport = CLITransport(CLIConfig({"start": ("fake-cli", "start")}, 5, 100), Codec())
+    assert await transport._invoke("start", {}) == "fake-ref"
