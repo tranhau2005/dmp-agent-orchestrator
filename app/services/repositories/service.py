@@ -1,0 +1,95 @@
+"""Register repository references and verify a run's remote checkout."""
+
+import re
+from dataclasses import dataclass
+from pathlib import PurePosixPath
+from typing import Protocol
+from urllib.parse import urlsplit
+
+from app.core.exceptions import SetupFailure
+from app.core.models import AuditRecord, RemoteRepository
+from app.schemas.contracts import RepositoryCreate
+
+
+@dataclass(frozen=True)
+class VerifiedRepository:
+    run_id: int
+    host: str
+    repo_url: str
+    canonical_path: str
+    base_sha: str
+
+
+class SecretReferencePolicy(Protocol):
+    # NEEDS-OWNER: accepted secret reference schemes and enrollment policy.
+    def accepts(self, reference: str) -> bool: ...
+
+
+class RepositoryService:
+    def __init__(self, session, secret_policy: SecretReferencePolicy):
+        self.session = session
+        self.secret_policy = secret_policy
+
+    async def register(self, request: RepositoryCreate) -> RemoteRepository:
+        parsed_url = urlsplit(request.repo_url)
+        if parsed_url.password is not None or parsed_url.query or parsed_url.fragment:
+            raise SetupFailure("repository URL must not contain credentials or query data")
+        for path in (request.canonical_repo_path, request.remote_workspace_root):
+            parsed = PurePosixPath(path)
+            if not parsed.is_absolute() or ".." in parsed.parts:
+                raise SetupFailure("repository and workspace paths must be absolute and normalized")
+        if not all(self.secret_policy.accepts(ref) for ref in request.secret_references.values()):
+            raise SetupFailure("invalid secret reference")
+        repository = RemoteRepository(**request.model_dump())
+        self.session.add(repository)
+        await self.session.flush()
+        return repository
+
+
+async def verify_run_setup(
+    session_factory,
+    executor,
+    repository,
+    *,
+    revision: str,
+    base_sha: str,
+    run_id: int,
+    correlation_id: str,
+) -> VerifiedRepository:
+    """Report a failed verification durably before returning a typed setup failure."""
+    try:
+        if not re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", base_sha):
+            raise ValueError("invalid base SHA")
+        if not await executor.verify_host_identity(repository, run_id):
+            raise ValueError("host or repository verification failed")
+        path = await executor.run_repo_command(
+            repository, ("pwd", "-P"), classification="setup", run_id=run_id
+        )
+        if path.exit_status or path.stdout.strip() != repository.canonical_repo_path:
+            raise ValueError("canonical path mismatch")
+        resolved = await executor.resolve_revision(repository, revision, run_id)
+        if resolved != base_sha:
+            raise ValueError("base SHA mismatch")
+        return VerifiedRepository(
+            run_id,
+            repository.ssh_host,
+            repository.repo_url,
+            repository.canonical_repo_path,
+            base_sha,
+        )
+    except Exception as exc:
+        async with session_factory() as session:
+            async with session.begin():
+                session.add(
+                    AuditRecord(
+                        actor_identity="scheduler",
+                        target_identity=f"run:{run_id}",
+                        decision_or_action="setup_failure",
+                        correlation_id=correlation_id,
+                        reason=type(exc).__name__,
+                        transition_certainty="certain",
+                    )
+                )
+        raise SetupFailure(
+            "repository setup verification failed", correlation_id=correlation_id
+        ) from exc
