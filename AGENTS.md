@@ -54,3 +54,8 @@ orca orchestration worker-start \
 The worker follows that repository's `AGENTS.md`. For work that spans repositories, start one worker per repository, state the shared API, event, or schema contract in each spec, and pass `--deps '["<task_id>"]'` when a worker needs another worker's result first.
 
 Auto mode does not grant permission to merge, deploy, or publish. Merge only with explicit owner approval.
+
+## Skill workflow (Codex)
+
+- Implement accepted plans and scoped tasks with the `ak-cook` skill, following the plan's phases and acceptance criteria.
+- Verify with the `ak-test` skill before reporting done: run this repository's checks, add or update tests for the changed behavior, and report the actual results.
