@@ -18,4 +18,13 @@ See [dmp-docs](https://github.com/tranhau2005/dmp-docs) for Kiro specifications,
 
 ## Agent roles (Orca)
 
-The orchestrator session runs `claude-opus-5-5`. Dispatch implementation and review to Codex workers (`--agent codex --model gpt-6.1-terra --effort xhigh`), including workers in sibling repositories; all three run in auto mode. Commands and rules are in [AGENTS.md](AGENTS.md#agent-roles-orca). Auto mode does not grant permission to merge, deploy, or publish.
+This session is the master node and runs `claude-opus-5-5`. It brainstorms, plans, and coordinates; it does not edit product code, and it does not merge.
+
+- Dispatch implementation to Codex workers (`--agent codex --model gpt-6.1-terra --effort xhigh`), including workers in sibling repositories.
+- Dispatch pull request review and merge to the OpenCode reviewer (`--agent opencode --model opencode-go/deepseek-v4.1-flash`). Only the reviewer merges, and only under the merge conditions in [AGENTS.md](AGENTS.md#merge-conditions).
+- Commands, the delivery flow, and the merge conditions are in [AGENTS.md](AGENTS.md#agent-roles-orca). Auto mode does not grant permission to deploy or publish.
+
+## Skill workflow (Claude)
+
+- Before multi-step delivery, run the `ak-brainstorm` skill to lock the outcome, constraints, non-goals, and acceptance criteria, and to compare viable approaches.
+- Then run the `ak-plan` skill to write a phased plan with acceptance criteria and verification steps. Hand the accepted plan to a Codex worker for implementation, then hand the worker's pull request to the OpenCode reviewer. The worker and reviewer skills are listed in [AGENTS.md](AGENTS.md#skill-workflow-codex).
