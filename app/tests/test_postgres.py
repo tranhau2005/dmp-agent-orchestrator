@@ -196,7 +196,89 @@ async def test_rejected_actions_are_audited_without_state_change():
                 )
             )
         ).all()
-        assert sorted(actions) == ["contract_violation", "transition_rejected"]
+        assert sorted(actions) == [
+            "contract_violation",
+            "transition_pending",
+            "transition_rejected",
+            "transition_resolved",
+        ]
+    from app.services.audit.service import AuditedTransitionService
+
+    audit_service = AuditedTransitionService(factory, {(TaskState.QUEUED, TaskState.READY)})
+    transition_correlation = str(uuid4())
+    await audit_service.transition(
+        task_id, TaskState.READY, actor="test", correlation_id=transition_correlation
+    )
+    await audit_service.require_certain(task_id)
+    async with factory() as session:
+        assert (await session.get(models.Task, task_id)).state == "ready"
+        records = (
+            await session.scalars(
+                select(models.AuditRecord).where(
+                    models.AuditRecord.correlation_id == transition_correlation
+                )
+            )
+        ).all()
+        assert {r.decision_or_action for r in records} == {
+            "transition_pending",
+            "transition_accepted",
+            "transition_resolved",
+        }
+    from app.core.exceptions import UncertainTransition
+
+    class BrokenSession:
+        async def __aenter__(self):
+            raise RuntimeError("simulated failure after marker")
+
+        async def __aexit__(self, *args):
+            pass
+
+    calls = 0
+
+    def failing_factory():
+        nonlocal calls
+        calls += 1
+        return factory() if calls == 1 else BrokenSession()
+
+    failure_id = str(uuid4())
+    failing_service = AuditedTransitionService(
+        failing_factory, {(TaskState.READY, TaskState.RUNNING)}
+    )
+    with pytest.raises(UncertainTransition):
+        await failing_service.transition(
+            task_id, TaskState.RUNNING, actor="test", correlation_id=failure_id
+        )
+    with pytest.raises(UncertainTransition):
+        await audit_service.require_certain(task_id)
+    await audit_service.reconcile(
+        task_id, actor="test", correlation_id=failure_id, reason="verified ready"
+    )
+    await audit_service.require_certain(task_id)
+    async with factory() as session:
+        assert (await session.get(models.Task, task_id)).state == "ready"
+        job_id = (await session.get(models.Task, task_id)).job_id
+
+    import asyncio
+    from types import SimpleNamespace
+
+    from app.core.exceptions import ClaimRejected
+    from app.tests.test_scheduler import FakeRedis
+    from app.workflows.scheduler import Scheduler
+
+    scheduler = Scheduler(
+        factory, FakeRedis(), 60, SimpleNamespace(require_ready=lambda: None), audit_service
+    )
+
+    async def attempt():
+        try:
+            return await scheduler.claim(job_id, task_id, actor="test", correlation_id=str(uuid4()))
+        except ClaimRejected:
+            return None
+
+    claims = await asyncio.gather(attempt(), attempt())
+    assert sum(claim is not None for claim in claims) == 1
+    async with factory() as session:
+        assert (await session.get(models.Task, task_id)).state == "running"
     await engine.dispose()
 
 
@@ -278,4 +360,329 @@ async def test_context_defaults_are_audited_with_transaction():
             select(models.AuditRecord).where(models.AuditRecord.correlation_id == correlation_id)
         )
         assert audit.decision_or_action == "context_defaults_applied"
+    await engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="requires isolated PostgreSQL")
+async def test_started_binding_rejected_by_database():
+    from datetime import UTC, datetime
+
+    from sqlalchemy.exc import DBAPIError
+
+    engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        async with session.begin():
+            repo = models.RemoteRepository(
+                repo_url="ssh://example.test/binding",
+                ssh_host="example.test",
+                ssh_host_key_policy="test",
+                canonical_repo_path="/test",
+                default_branch="main",
+                secret_references={},
+                remote_workspace_root="/work",
+                created_by="test",
+            )
+            session.add(repo)
+            await session.flush()
+            job = models.Job(
+                repository_id=repo.id,
+                base_revision="main",
+                objective="test",
+                execution_policy={},
+                status="queued",
+                created_by="test",
+            )
+            session.add(job)
+            await session.flush()
+            task = models.Task(
+                job_id=job.id,
+                task_key="binding",
+                instructions="test",
+                spec_references=[],
+                validation_gates=[],
+                retry_policy={},
+                timeout_policy={},
+                state="queued",
+            )
+            session.add(task)
+            await session.flush()
+            run = models.Run(
+                task_id=task.id,
+                attempt_no=1,
+                provider_identity="kiro",
+                adapter_version="1",
+                protocol_version="1",
+                base_commit_sha="old",
+                context_hash="hash",
+                status="queued",
+            )
+            session.add(run)
+            await session.flush()
+            run_id = run.id
+            repo_id = repo.id
+            job_id = job.id
+            session.add(
+                models.ContextPackage(
+                    run_id=run.id,
+                    repository_identity={},
+                    base_commit_sha="old",
+                    job_id=job.id,
+                    task_id=task.id,
+                    spec_references=[],
+                    allowed_paths=[],
+                    allowed_commands=[],
+                    constraints={},
+                    execution_policy={},
+                    applied_defaults={},
+                    context_hash="hash",
+                    schema_version="1.0",
+                )
+            )
+            await session.flush()
+            run.instruction_hash = "a" * 64
+            run.started_at = datetime.now(UTC)
+            run.status = "running"
+    async with factory() as session:
+        with pytest.raises(DBAPIError):
+            async with session.begin():
+                run = await session.get(models.Run, run_id)
+                run.base_commit_sha = "new"
+    async with factory() as session:
+        assert (await session.get(models.Run, run_id)).base_commit_sha == "old"
+    async with factory() as session:
+        with pytest.raises(DBAPIError):
+            async with session.begin():
+                repository = await session.get(models.RemoteRepository, repo_id)
+                repository.ssh_host = "changed.example.test"
+    async with factory() as session:
+        with pytest.raises(DBAPIError):
+            async with session.begin():
+                job = await session.get(models.Job, job_id)
+                job.repository_id = 999999
+    async with factory() as session:
+        with pytest.raises(DBAPIError):
+            async with session.begin():
+                context = await session.scalar(
+                    select(models.ContextPackage).where(models.ContextPackage.run_id == run_id)
+                )
+                context.repository_identity = {"name": "changed"}
+
+    from types import SimpleNamespace
+
+    from app.core.exceptions import ClaimRejected, SetupFailure
+    from app.services.repositories.service import VerifiedRepository
+    from app.tools.worktree import WorktreeManager
+
+    class BrokenExecutor:
+        async def run_repo_command(self, *args, **kwargs):
+            raise RuntimeError("simulated disconnection")
+
+    async with factory() as session:
+        with pytest.raises(SetupFailure, match="does not match run job"):
+            await WorktreeManager(session, BrokenExecutor()).create_for_run(
+                SimpleNamespace(
+                    id=repo_id + 999999,
+                    remote_workspace_root="/fake/work",
+                    ssh_host="example.test",
+                    repo_url="ssh://example.test/binding",
+                    canonical_repo_path="/test",
+                ),
+                SimpleNamespace(id=run_id),
+                VerifiedRepository(
+                    run_id, "example.test", "ssh://example.test/binding", "/test", "old"
+                ),
+            )
+    async with factory() as session:
+        with pytest.raises(SetupFailure, match="worktree creation failed"):
+            await WorktreeManager(session, BrokenExecutor()).create_for_run(
+                SimpleNamespace(
+                    id=repo_id,
+                    remote_workspace_root="/fake/work",
+                    ssh_host="example.test",
+                    repo_url="ssh://example.test/binding",
+                    canonical_repo_path="/test",
+                ),
+                SimpleNamespace(id=run_id),
+                VerifiedRepository(
+                    run_id, "example.test", "ssh://example.test/binding", "/test", "old"
+                ),
+            )
+    async with factory() as session:
+        persisted = await session.get(models.Run, run_id)
+        assert persisted.worktree_path == f"/fake/work/run-{run_id}"
+    async with factory() as session:
+        with pytest.raises(ClaimRejected):
+            await WorktreeManager(session, BrokenExecutor()).create_for_run(
+                SimpleNamespace(
+                    id=repo_id,
+                    remote_workspace_root="/fake/work",
+                    ssh_host="example.test",
+                    repo_url="ssh://example.test/binding",
+                    canonical_repo_path="/test",
+                ),
+                SimpleNamespace(id=run_id),
+                VerifiedRepository(
+                    run_id, "example.test", "ssh://example.test/binding", "/test", "old"
+                ),
+            )
+
+    import asyncio
+
+    from app.core.redaction import Redactor
+    from app.services.runs.events import EventService
+
+    async def produce(index):
+        async with factory() as session:
+            async with session.begin():
+                await EventService(session, Redactor(["secret"]), 1024).emit(
+                    run_id, "output", "fake", {"value": "secret"}, str(index)
+                )
+
+    await asyncio.gather(*(produce(i) for i in range(12)))
+    async with factory() as session:
+        events = (
+            await session.scalars(
+                select(models.Event)
+                .where(models.Event.run_id == run_id)
+                .order_by(models.Event.sequence_no)
+            )
+        ).all()
+        assert [event.sequence_no for event in events] == list(range(1, 13))
+        assert all(event.payload_redacted == {"value": "[REDACTED]"} for event in events)
+    from sqlalchemy import delete
+
+    async with factory() as session:
+        async with session.begin():
+            await session.execute(
+                delete(models.Event).where(
+                    models.Event.run_id == run_id, models.Event.sequence_no <= 5
+                )
+            )
+    async with factory() as session:
+        service = EventService(session, Redactor([]), 1024)
+        gap = await service.replay(run_id, 0)
+        assert gap.gap and gap.earliest_retained == 6
+        suffix = await service.replay(run_id, 8)
+        assert not suffix.gap and [event.sequence_no for event in suffix.events] == [9, 10, 11, 12]
+    await engine.dispose()
+
+
+@pytest.mark.skipif(not os.getenv("TEST_DATABASE_URL"), reason="requires isolated PostgreSQL")
+async def test_run_start_persists_and_locks_instruction_hash():
+    from uuid import uuid4
+
+    from sqlalchemy.exc import DBAPIError
+
+    from app.core.exceptions import SetupFailure
+    from app.services.adapters.instructions import TaskInstructions
+    from app.services.runs.binding import RunBindingService
+    from app.tools.context import ContextPackager
+
+    engine = create_async_engine(os.environ["TEST_DATABASE_URL"])
+    factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with factory() as session:
+        async with session.begin():
+            repo = models.RemoteRepository(
+                repo_url="ssh://example.test/instructions",
+                ssh_host="example.test",
+                ssh_host_key_policy="fake",
+                canonical_repo_path="/fake",
+                default_branch="main",
+                secret_references={},
+                remote_workspace_root="/work",
+                created_by="test",
+            )
+            session.add(repo)
+            await session.flush()
+            job = models.Job(
+                repository_id=repo.id,
+                base_revision="main",
+                objective="fake objective",
+                execution_policy={},
+                status="queued",
+                created_by="test",
+            )
+            session.add(job)
+            await session.flush()
+            task = models.Task(
+                job_id=job.id,
+                task_key="instructions",
+                instructions="fake instruction",
+                spec_references=[{"ref": "fake"}],
+                validation_gates=[],
+                retry_policy={},
+                timeout_policy={},
+                state="queued",
+            )
+            session.add(task)
+            await session.flush()
+            run = models.Run(
+                task_id=task.id,
+                attempt_no=1,
+                provider_identity="kiro",
+                adapter_version="1",
+                protocol_version="1",
+                base_commit_sha="a" * 40,
+                context_hash="",
+                status="queued",
+                worktree_path=f"/work/fake-{uuid4()}",
+            )
+            session.add(run)
+            await session.flush()
+            run_id, task_id, job_id = run.id, task.id, job.id
+    packager = ContextPackager({"allowed_paths": [], "allowed_commands": [], "constraints": {}})
+    context = packager.build(
+        repository_identity={},
+        base_commit_sha="a" * 40,
+        job_id=job_id,
+        task_id=task_id,
+        spec_references=[],
+        execution_policy={},
+    )
+    async with factory() as session:
+        async with session.begin():
+            await RunBindingService(session).bind(run_id, context)
+    async with factory() as session:
+        async with session.begin():
+            task = await session.get(models.Task, task_id)
+            task.instructions = "   "
+    async with factory() as session:
+        with pytest.raises(SetupFailure):
+            async with session.begin():
+                await RunBindingService(session).start(run_id)
+    async with factory() as session:
+        async with session.begin():
+            task = await session.get(models.Task, task_id)
+            task.instructions = "fake instruction"
+    async with factory() as session:
+        async with session.begin():
+            await RunBindingService(session).start(run_id)
+    expected = TaskInstructions.from_task(
+        "fake instruction", "fake objective", [{"ref": "fake"}]
+    ).instruction_hash()
+    async with factory() as session:
+        run = await session.get(models.Run, run_id)
+        assert run.instruction_hash == expected
+        assert run.context_hash == context.context_hash
+    from app.services.adapters.input import build_adapter_input
+
+    async with factory() as session:
+        adapter_input = await build_adapter_input(
+            session, run_id, timeout_seconds=30, secret_references={}
+        )
+        assert adapter_input.instruction_hash == expected
+        assert adapter_input.instructions.task_instructions == "fake instruction"
+    async with factory() as session:
+        async with session.begin():
+            task = await session.get(models.Task, task_id)
+            task.instructions = "changed instruction"
+    async with factory() as session:
+        with pytest.raises(SetupFailure):
+            await build_adapter_input(session, run_id, timeout_seconds=30, secret_references={})
+    async with factory() as session:
+        with pytest.raises(DBAPIError):
+            async with session.begin():
+                run = await session.get(models.Run, run_id)
+                run.instruction_hash = "b" * 64
     await engine.dispose()

@@ -99,6 +99,8 @@ class Run(Identified, Base):
     worker_version: Mapped[str | None] = mapped_column(String(64))
     base_commit_sha: Mapped[str] = mapped_column(String(64))
     context_hash: Mapped[str] = mapped_column(String(64))
+    instruction_hash: Mapped[str | None] = mapped_column(String(64))
+    next_event_sequence: Mapped[int] = mapped_column(Integer, server_default="1")
     worktree_path: Mapped[str | None] = mapped_column(Text)
     branch_name: Mapped[str | None] = mapped_column(Text)
     resulting_commit_sha: Mapped[str | None] = mapped_column(String(64))
